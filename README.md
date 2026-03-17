@@ -5,7 +5,7 @@
 [![Artifacts](https://img.shields.io/badge/Artifacts-9_Types-brightgreen)](#supported-artifacts)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Bun-blue)](https://bun.sh)
 
-**Bring Google NotebookLM's full Studio toolkit to your CLI.** Generate slide decks, audio overviews, videos, mind maps, flashcards, quizzes, infographics, reports, and data tables — all from Claude Code.
+**Bring Google NotebookLM's full Studio toolkit to Claude Code.** Generate slide decks, audio overviews, videos, mind maps, flashcards, quizzes, infographics, reports, and data tables — just ask Claude.
 
 ---
 
@@ -66,25 +66,17 @@ Then reference skills from `.claude/notebooklm-ai-plugin/skills/`.
 
 ### Authentication
 
-First run opens Chrome to authenticate with Google. Cookies are cached for subsequent runs.
+The first time you use the skill, it opens Chrome for Google login. Cookies are cached for subsequent runs. Just tell Claude:
 
-```bash
-npx -y bun skills/notebooklm/scripts/main.ts login
-```
+> *"Log me into NotebookLM"*
 
 ### Generate Your First Artifact
 
-```bash
-# Add a notebook to your library
-npx -y bun skills/notebooklm/scripts/main.ts notebooks add https://notebooklm.google.com/notebook/YOUR_ID --name "My Research"
+Once authenticated, just describe what you want:
 
-# Generate artifacts
-npx -y bun skills/notebooklm/scripts/main.ts generate report --format study_guide --output guide.md
-npx -y bun skills/notebooklm/scripts/main.ts generate infographic --orientation portrait --output summary.png
-npx -y bun skills/notebooklm/scripts/main.ts generate audio --format deep_dive --length long
-npx -y bun skills/notebooklm/scripts/main.ts generate video --style whiteboard --format explainer
-npx -y bun skills/notebooklm/scripts/main.ts generate quiz --difficulty hard --quantity more --json
-```
+> *"Add this notebook https://notebooklm.google.com/notebook/YOUR_ID and generate a study guide from it"*
+
+That's it — the skill handles everything: authentication, notebook management, artifact creation, polling, and download.
 
 ---
 
@@ -106,71 +98,31 @@ npx -y bun skills/notebooklm/scripts/main.ts generate quiz --difficulty hard --q
 
 ## Usage Examples
 
-Just describe what you need to Claude:
+Just describe what you need to Claude — the skill triggers automatically:
 
-> *"Generate a slide deck from my NotebookLM notebook about machine learning"*
+**"Generate a slide deck from my NotebookLM notebook about machine learning"**
+> Creates a PDF/PPTX presentation from your notebook sources.
 
-> *"Create a deep dive audio overview of my research papers"*
+**"Create a deep dive audio overview of my research papers"**
+> Generates a long-form podcast-style M4A audio discussion.
 
-> *"Make a portrait infographic highlighting the key findings"*
+**"Make a portrait infographic highlighting the key findings"**
+> Produces a PNG infographic in portrait orientation.
 
-> *"Generate a hard quiz with more questions from my study materials and give me the JSON"*
+**"Generate a hard quiz with more questions from my study materials and give me the JSON"**
+> Creates a challenging multiple-choice quiz and outputs structured JSON.
 
-> *"Log me into NotebookLM, add this notebook, and create a whiteboard-style video explainer"*
+**"Log me into NotebookLM, add this notebook, and create a whiteboard-style video explainer"**
+> Full pipeline: authenticates, registers the notebook, and generates a video.
 
-The skill handles authentication, notebook resolution, artifact creation, polling, and download automatically.
-
----
-
-## Commands Reference
-
-### Authentication
-
-```bash
-npx -y bun skills/notebooklm/scripts/main.ts login              # Open Chrome for Google login
-npx -y bun skills/notebooklm/scripts/main.ts login --force       # Force re-authentication
-npx -y bun skills/notebooklm/scripts/main.ts login --cookies "SID=...; __Secure-1PSID=..."  # Manual cookie import
-```
-
-### Notebook Management
-
-```bash
-npx -y bun skills/notebooklm/scripts/main.ts notebooks list                    # List all notebooks
-npx -y bun skills/notebooklm/scripts/main.ts notebooks add <url> --name "..."  # Add a notebook
-npx -y bun skills/notebooklm/scripts/main.ts notebooks remove <id>             # Remove a notebook
-npx -y bun skills/notebooklm/scripts/main.ts notebooks activate <id>           # Set default notebook
-npx -y bun skills/notebooklm/scripts/main.ts notebooks search <query>          # Search by name/description
-```
-
-### Artifact Generation
-
-```bash
-npx -y bun skills/notebooklm/scripts/main.ts generate <type> [options]
-```
-
-| Option | Description |
-|:-------|:------------|
-| `--notebook <url\|id>` | Target notebook (defaults to active) |
-| `--output <path>` | Output file path (auto-named if omitted) |
-| `--instructions <text>` | Custom instructions for generation |
-| `--language <code>` | Language code (default: `en`) |
-| `--json` | Output as JSON |
-
-### Type-Specific Options
-
-| Type | Options |
-|:-----|:--------|
-| **audio** | `--format` deep_dive / brief / critique / debate | `--length` short / default / long |
-| **video** | `--style` auto / classic / whiteboard / kawaii / anime / watercolor | `--format` explainer / brief |
-| **slide_deck** | `--format` detailed / presenter | `--length` default / short |
-| **quiz** | `--difficulty` easy / medium / hard | `--quantity` fewer / standard / more |
-| **flashcards** | `--difficulty` easy / medium / hard | `--quantity` fewer / standard / more |
-| **infographic** | `--orientation` landscape / portrait / square | `--detail` concise / standard / detailed |
-| **report** | `--format` briefing / study_guide / blog_post / custom |
+**"Search my notebooks for 'machine learning' and generate flashcards from the first result"**
+> Searches your library and creates study flashcards.
 
 ---
 
-## Environment Variables
+## Configuration
+
+### Environment Variables
 
 | Variable | Description |
 |:---------|:------------|
@@ -180,9 +132,7 @@ npx -y bun skills/notebooklm/scripts/main.ts generate <type> [options]
 | `NOTEBOOKLM_CHROME_PATH` | Chrome executable path |
 | `NOTEBOOKLM_OUTPUT_DIR` | Default output directory |
 
----
-
-## Rate Limits
+### Rate Limits
 
 NotebookLM free tier limits:
 
@@ -205,22 +155,20 @@ notebooklm-ai-plugin/
 ├── skills/
 │   └── notebooklm/
 │       ├── SKILL.md                 # Skill definition (triggers + docs)
-│       └── scripts/
+│       └── scripts/                 # Implementation scripts (managed by the skill)
 │           ├── main.ts              # CLI entry point
 │           ├── auth.ts              # Chrome CDP authentication
-│           ├── cookie-store.ts      # Cookie persistence
 │           ├── rpc-client.ts        # batchexecute protocol client
-│           ├── rpc-types.ts         # RPC method IDs + enum codes
 │           ├── artifact-generator.ts # Create / poll / download artifacts
 │           ├── notebook-manager.ts  # Notebook library CRUD
-│           ├── paths.ts             # Platform-aware storage paths
-│           ├── types.ts             # Shared TypeScript types
-│           └── get-cookie.ts        # Quick login helper
+│           └── ...                  # Cookie store, types, paths, RPC definitions
 ├── package.json
 ├── tsconfig.json
 ├── LICENSE
 └── README.md
 ```
+
+> For full CLI commands and script usage details, see [`skills/notebooklm/SKILL.md`](skills/notebooklm/SKILL.md).
 
 ---
 
