@@ -1,0 +1,11 @@
+{
+  "name": "notebooklm-ai-plugin",
+  "description": "Generate NotebookLM artifacts (slides, audio, video, mind maps, quizzes, flashcards, infographics, reports, data tables) from your notebooks",
+  "version": "1.0.0",
+  "skills": [
+    {
+      "name": "notebooklm",
+      "path": "skills/notebooklm/SKILL.md"
+    }
+  ]
+}

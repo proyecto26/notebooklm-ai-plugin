@@ -1,0 +1,14 @@
+{
+  "name": "notebooklm-ai-plugin",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun scripts/main.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "puppeteer": "^24.39.1",
+    "typescript": "^5.7.0"
+  }
+}

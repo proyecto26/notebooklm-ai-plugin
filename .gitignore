@@ -1,0 +1,21 @@
+node_modules/
+dist/
+*.js
+*.d.ts
+*.js.map
+
+# Cookie and auth data
+cookies.json
+*.cookie
+
+# Output artifacts
+outputs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
