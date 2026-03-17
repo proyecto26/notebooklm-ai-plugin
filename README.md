@@ -2,76 +2,10 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet)](https://code.claude.com/docs/en/plugins)
-[![Artifacts](https://img.shields.io/badge/Artifacts-9_Types-brightgreen)](#-supported-artifacts)
+[![Artifacts](https://img.shields.io/badge/Artifacts-9_Types-brightgreen)](#supported-artifacts)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Bun-blue)](https://bun.sh)
 
 **Bring Google NotebookLM's full Studio toolkit to your CLI.** Generate slide decks, audio overviews, videos, mind maps, flashcards, quizzes, infographics, reports, and data tables — all from Claude Code.
-
----
-
-## Architecture
-
-```mermaid
-graph TB
-    subgraph "Claude Code"
-        A["User Prompt"] --> B["NotebookLM Skill"]
-    end
-
-    subgraph "Authentication"
-        B --> C["Chrome CDP"]
-        C --> D["Cookie Extraction"]
-        D --> E["Cookie Store"]
-    end
-
-    subgraph "NotebookLM API"
-        E --> F["batchexecute RPC"]
-        F --> G["CREATE_ARTIFACT"]
-        F --> H["LIST_ARTIFACTS"]
-        F --> I["LIST_NOTEBOOKS"]
-    end
-
-    subgraph "9 Artifact Types"
-        G --> J["Slide Deck"]
-        G --> K["Audio Overview"]
-        G --> L["Video Overview"]
-        G --> M["Mind Map"]
-        G --> N["Quiz"]
-        G --> O["Flashcards"]
-        G --> P["Infographic"]
-        G --> Q["Report"]
-        G --> R["Data Table"]
-    end
-
-    style A fill:#7c3aed,color:#fff
-    style F fill:#1a73e8,color:#fff
-    style J fill:#34a853,color:#fff
-    style K fill:#34a853,color:#fff
-    style L fill:#34a853,color:#fff
-    style M fill:#34a853,color:#fff
-    style N fill:#34a853,color:#fff
-    style O fill:#34a853,color:#fff
-    style P fill:#34a853,color:#fff
-    style Q fill:#34a853,color:#fff
-    style R fill:#34a853,color:#fff
-```
-
-**Hybrid approach:** Chrome DevTools Protocol (CDP) handles Google authentication once, then all operations use direct batchexecute RPC calls — no browser overhead for artifact generation.
-
----
-
-## Supported Artifacts
-
-| Type | Output | Description |
-|:-----|:-------|:------------|
-| **Slide Deck** | PDF / PPTX | Presentation slides summarizing your notebook sources |
-| **Audio Overview** | M4A | Podcast-style conversation (deep dive, brief, critique, debate) |
-| **Video Overview** | MP4 | Animated explainer (classic, whiteboard, kawaii, anime, watercolor) |
-| **Mind Map** | HTML | Interactive concept map of key topics and relationships |
-| **Flashcards** | HTML / JSON | Study cards generated from source material |
-| **Quiz** | HTML / JSON | Multiple-choice quiz with answer key and explanations |
-| **Infographic** | PNG | Visual summary in landscape, portrait, or square orientation |
-| **Report** | Markdown | Written report (briefing doc, study guide, blog post) |
-| **Data Table** | CSV / Sheets | Structured data extracted from your sources |
 
 ---
 
@@ -154,6 +88,22 @@ npx -y bun skills/notebooklm/scripts/main.ts generate quiz --difficulty hard --q
 
 ---
 
+## Supported Artifacts
+
+| Type | Output | Description |
+|:-----|:-------|:------------|
+| **Slide Deck** | PDF / PPTX | Presentation slides summarizing your notebook sources |
+| **Audio Overview** | M4A | Podcast-style conversation (deep dive, brief, critique, debate) |
+| **Video Overview** | MP4 | Animated explainer (classic, whiteboard, kawaii, anime, watercolor) |
+| **Mind Map** | HTML | Interactive concept map of key topics and relationships |
+| **Flashcards** | HTML / JSON | Study cards generated from source material |
+| **Quiz** | HTML / JSON | Multiple-choice quiz with answer key and explanations |
+| **Infographic** | PNG | Visual summary in landscape, portrait, or square orientation |
+| **Report** | Markdown | Written report (briefing doc, study guide, blog post) |
+| **Data Table** | CSV / Sheets | Structured data extracted from your sources |
+
+---
+
 ## Usage Examples
 
 Just describe what you need to Claude:
@@ -220,42 +170,6 @@ npx -y bun skills/notebooklm/scripts/main.ts generate <type> [options]
 
 ---
 
-## How It Works
-
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant C as Claude Code
-    participant P as Plugin (Bun/TS)
-    participant Ch as Chrome (CDP)
-    participant N as NotebookLM API
-
-    U->>C: "Generate a slide deck from my notebook"
-    C->>P: Invoke notebooklm skill
-
-    Note over P,Ch: First-time auth only
-    P->>Ch: Launch Chrome via CDP
-    Ch-->>P: Google session cookies
-    P->>P: Cache cookies to disk
-
-    P->>N: LIST_NOTEBOOKS (batchexecute RPC)
-    N-->>P: Notebook sources
-    P->>N: CREATE_ARTIFACT (type=slide_deck)
-    N-->>P: Artifact ID
-
-    loop Poll every 5s
-        P->>N: LIST_ARTIFACTS
-        N-->>P: Status: processing / completed
-    end
-
-    P->>N: Download artifact
-    N-->>P: PDF/PNG/M4A/MP4 file
-    P-->>C: File saved to disk
-    C-->>U: "Slide deck saved to slides.pdf"
-```
-
----
-
 ## Environment Variables
 
 | Variable | Description |
@@ -310,7 +224,87 @@ notebooklm-ai-plugin/
 
 ---
 
-## Technical Details
+## Architecture
+
+```mermaid
+graph TB
+    subgraph "Claude Code"
+        A["User Prompt"] --> B["NotebookLM Skill"]
+    end
+
+    subgraph "Authentication"
+        B --> C["Chrome CDP"]
+        C --> D["Cookie Extraction"]
+        D --> E["Cookie Store"]
+    end
+
+    subgraph "NotebookLM API"
+        E --> F["batchexecute RPC"]
+        F --> G["CREATE_ARTIFACT"]
+        F --> H["LIST_ARTIFACTS"]
+        F --> I["LIST_NOTEBOOKS"]
+    end
+
+    subgraph "9 Artifact Types"
+        G --> J["Slide Deck"]
+        G --> K["Audio Overview"]
+        G --> L["Video Overview"]
+        G --> M["Mind Map"]
+        G --> N["Quiz"]
+        G --> O["Flashcards"]
+        G --> P["Infographic"]
+        G --> Q["Report"]
+        G --> R["Data Table"]
+    end
+
+    style A fill:#7c3aed,color:#fff
+    style F fill:#1a73e8,color:#fff
+    style J fill:#34a853,color:#fff
+    style K fill:#34a853,color:#fff
+    style L fill:#34a853,color:#fff
+    style M fill:#34a853,color:#fff
+    style N fill:#34a853,color:#fff
+    style O fill:#34a853,color:#fff
+    style P fill:#34a853,color:#fff
+    style Q fill:#34a853,color:#fff
+    style R fill:#34a853,color:#fff
+```
+
+**Hybrid approach:** Chrome DevTools Protocol (CDP) handles Google authentication once, then all operations use direct batchexecute RPC calls — no browser overhead for artifact generation.
+
+### How It Works
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant C as Claude Code
+    participant P as Plugin (Bun/TS)
+    participant Ch as Chrome (CDP)
+    participant N as NotebookLM API
+
+    U->>C: "Generate a slide deck from my notebook"
+    C->>P: Invoke notebooklm skill
+
+    Note over P,Ch: First-time auth only
+    P->>Ch: Launch Chrome via CDP
+    Ch-->>P: Google session cookies
+    P->>P: Cache cookies to disk
+
+    P->>N: LIST_NOTEBOOKS (batchexecute RPC)
+    N-->>P: Notebook sources
+    P->>N: CREATE_ARTIFACT (type=slide_deck)
+    N-->>P: Artifact ID
+
+    loop Poll every 5s
+        P->>N: LIST_ARTIFACTS
+        N-->>P: Status: processing / completed
+    end
+
+    P->>N: Download artifact
+    N-->>P: PDF/PNG/M4A/MP4 file
+    P-->>C: File saved to disk
+    C-->>U: "Slide deck saved to slides.pdf"
+```
 
 ### batchexecute RPC Protocol
 
