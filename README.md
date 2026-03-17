@@ -77,45 +77,79 @@ graph TB
 
 ## Quick Start
 
-### 1. Install
+### Installation
 
-**From the plugin directory:**
+#### Option 1: CLI Install (Recommended)
+
+Use [npx skills](https://github.com/vercel-labs/skills) to install skills directly:
+
 ```bash
-claude plugin install notebooklm-ai-plugin
+# Install the skill
+npx skills add proyecto26/notebooklm-ai-plugin
+
+# List available skills
+npx skills add proyecto26/notebooklm-ai-plugin --list
 ```
 
-**Or clone directly:**
+This automatically installs to your `.claude/skills/` directory.
+
+#### Option 2: Claude Code Plugin
+
+Install via Claude Code's built-in plugin system:
+
+```bash
+# Add the marketplace
+/plugin marketplace add proyecto26/notebooklm-ai-plugin
+
+# Install the plugin
+/plugin install notebooklm-ai-plugin
+```
+
+#### Option 3: Clone and Copy
+
+Clone the repo and copy the skills folder:
+
 ```bash
 git clone https://github.com/proyecto26/notebooklm-ai-plugin.git
-cd notebooklm-ai-plugin
-npm install
+cp -r notebooklm-ai-plugin/skills/* .claude/skills/
 ```
 
-**Or use as a local plugin:**
+#### Option 4: Git Submodule
+
+Add as a submodule for easy updates:
+
 ```bash
-claude --plugin-dir /path/to/notebooklm-ai-plugin
+git submodule add https://github.com/proyecto26/notebooklm-ai-plugin.git .claude/notebooklm-ai-plugin
 ```
 
-### 2. Authenticate
+Then reference skills from `.claude/notebooklm-ai-plugin/skills/`.
+
+#### Option 5: Fork and Customize
+
+1. Fork this repository
+2. Customize the skill for your specific needs
+3. Clone your fork into your projects
+
+### Authentication
+
+First run opens Chrome to authenticate with Google. Cookies are cached for subsequent runs.
 
 ```bash
-npx -y bun scripts/main.ts login
+npx -y bun skills/notebooklm/scripts/main.ts login
 ```
 
-Opens Chrome for Google login. Cookies are cached locally for subsequent runs.
-
-### 3. Generate
+### Generate Your First Artifact
 
 ```bash
-# Add a notebook
-npx -y bun scripts/main.ts notebooks add https://notebooklm.google.com/notebook/YOUR_ID --name "My Research"
+# Add a notebook to your library
+npx -y bun skills/notebooklm/scripts/main.ts notebooks add https://notebooklm.google.com/notebook/YOUR_ID --name "My Research"
 
 # Generate artifacts
-npx -y bun scripts/main.ts generate report --format study_guide --output guide.md
-npx -y bun scripts/main.ts generate infographic --orientation portrait --output summary.png
-npx -y bun scripts/main.ts generate audio --format deep_dive --length long
-npx -y bun scripts/main.ts generate video --style whiteboard --format explainer
-npx -y bun scripts/main.ts generate quiz --difficulty hard --quantity more --json
+npx -y bun skills/notebooklm/scripts/main.ts generate report --format study_guide --output guide.md
+npx -y bun skills/notebooklm/scripts/main.ts generate infographic --orientation portrait --output summary.png
+npx -y bun skills/notebooklm/scripts/main.ts generate audio --format deep_dive --length long
+npx -y bun skills/notebooklm/scripts/main.ts generate video --style whiteboard --format explainer
+npx -y bun skills/notebooklm/scripts/main.ts generate quiz --difficulty hard --quantity more --json
 ```
 
 ---
@@ -143,25 +177,25 @@ The skill handles authentication, notebook resolution, artifact creation, pollin
 ### Authentication
 
 ```bash
-npx -y bun scripts/main.ts login              # Open Chrome for Google login
-npx -y bun scripts/main.ts login --force       # Force re-authentication
-npx -y bun scripts/main.ts login --cookies "SID=...; __Secure-1PSID=..."  # Manual cookie import
+npx -y bun skills/notebooklm/scripts/main.ts login              # Open Chrome for Google login
+npx -y bun skills/notebooklm/scripts/main.ts login --force       # Force re-authentication
+npx -y bun skills/notebooklm/scripts/main.ts login --cookies "SID=...; __Secure-1PSID=..."  # Manual cookie import
 ```
 
 ### Notebook Management
 
 ```bash
-npx -y bun scripts/main.ts notebooks list                    # List all notebooks
-npx -y bun scripts/main.ts notebooks add <url> --name "..."  # Add a notebook
-npx -y bun scripts/main.ts notebooks remove <id>             # Remove a notebook
-npx -y bun scripts/main.ts notebooks activate <id>           # Set default notebook
-npx -y bun scripts/main.ts notebooks search <query>          # Search by name/description
+npx -y bun skills/notebooklm/scripts/main.ts notebooks list                    # List all notebooks
+npx -y bun skills/notebooklm/scripts/main.ts notebooks add <url> --name "..."  # Add a notebook
+npx -y bun skills/notebooklm/scripts/main.ts notebooks remove <id>             # Remove a notebook
+npx -y bun skills/notebooklm/scripts/main.ts notebooks activate <id>           # Set default notebook
+npx -y bun skills/notebooklm/scripts/main.ts notebooks search <query>          # Search by name/description
 ```
 
 ### Artifact Generation
 
 ```bash
-npx -y bun scripts/main.ts generate <type> [options]
+npx -y bun skills/notebooklm/scripts/main.ts generate <type> [options]
 ```
 
 | Option | Description |
@@ -253,21 +287,21 @@ NotebookLM free tier limits:
 ```
 notebooklm-ai-plugin/
 ├── .claude-plugin/
-│   └── plugin.json              # Plugin manifest
+│   └── plugin.json                  # Plugin manifest
 ├── skills/
 │   └── notebooklm/
-│       └── SKILL.md             # Skill definition (triggers + docs)
-├── scripts/
-│   ├── main.ts                  # CLI entry point
-│   ├── auth.ts                  # Chrome CDP authentication
-│   ├── cookie-store.ts          # Cookie persistence
-│   ├── rpc-client.ts            # batchexecute protocol client
-│   ├── rpc-types.ts             # RPC method IDs + enum codes
-│   ├── artifact-generator.ts    # Create / poll / download artifacts
-│   ├── notebook-manager.ts      # Notebook library CRUD
-│   ├── paths.ts                 # Platform-aware storage paths
-│   ├── types.ts                 # Shared TypeScript types
-│   └── get-cookie.ts            # Quick login helper
+│       ├── SKILL.md                 # Skill definition (triggers + docs)
+│       └── scripts/
+│           ├── main.ts              # CLI entry point
+│           ├── auth.ts              # Chrome CDP authentication
+│           ├── cookie-store.ts      # Cookie persistence
+│           ├── rpc-client.ts        # batchexecute protocol client
+│           ├── rpc-types.ts         # RPC method IDs + enum codes
+│           ├── artifact-generator.ts # Create / poll / download artifacts
+│           ├── notebook-manager.ts  # Notebook library CRUD
+│           ├── paths.ts             # Platform-aware storage paths
+│           ├── types.ts             # Shared TypeScript types
+│           └── get-cookie.ts        # Quick login helper
 ├── package.json
 ├── tsconfig.json
 ├── LICENSE

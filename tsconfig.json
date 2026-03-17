@@ -11,6 +11,6 @@
     "resolveJsonModule": true,
     "lib": ["ESNext", "DOM"]
   },
-  "include": ["scripts/**/*.ts"],
+  "include": ["skills/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }
