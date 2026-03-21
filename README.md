@@ -185,17 +185,26 @@ NotebookLM free tier limits:
 ```
 notebooklm-ai-plugin/
 ├── .claude-plugin/
-│   └── plugin.json                  # Plugin manifest
+│   ├── plugin.json                  # Plugin manifest
+│   └── marketplace.json             # Marketplace metadata
 ├── skills/
 │   └── notebooklm/
 │       ├── SKILL.md                 # Skill definition (triggers + docs)
-│       └── scripts/                 # Implementation scripts (managed by the skill)
-│           ├── main.ts              # CLI entry point
+│       └── scripts/
+│           ├── main.ts              # CLI entry point (all commands)
 │           ├── auth.ts              # Chrome CDP authentication
+│           ├── chat.ts              # Streaming chat with notebook AI
 │           ├── rpc-client.ts        # batchexecute protocol client
+│           ├── rpc-types.ts         # RPC method IDs + enum codes
 │           ├── artifact-generator.ts # Create / poll / download artifacts
+│           ├── source-manager.ts    # Add / list / delete sources
+│           ├── research-manager.ts  # Fast / deep web research
+│           ├── notes-manager.ts     # Notes CRUD
 │           ├── notebook-manager.ts  # Notebook library CRUD
-│           └── ...                  # Cookie store, types, paths, RPC definitions
+│           ├── cookie-store.ts      # Cookie persistence
+│           ├── paths.ts             # Platform-aware storage
+│           ├── types.ts             # Shared TypeScript types
+│           └── get-cookie.ts        # Quick login helper
 ├── package.json
 ├── tsconfig.json
 ├── LICENSE
@@ -222,34 +231,32 @@ graph TB
 
     subgraph "NotebookLM API"
         E --> F["batchexecute RPC"]
-        F --> G["CREATE_ARTIFACT"]
-        F --> H["LIST_ARTIFACTS"]
-        F --> I["LIST_NOTEBOOKS"]
+        E --> F2["Streaming Chat"]
+        F --> G["Artifacts"]
+        F --> H["Sources"]
+        F --> I["Research"]
+        F --> I2["Notes"]
+        F --> I3["Notebooks"]
     end
 
-    subgraph "9 Artifact Types"
-        G --> J["Slide Deck"]
-        G --> K["Audio Overview"]
-        G --> L["Video Overview"]
-        G --> M["Mind Map"]
-        G --> N["Quiz"]
-        G --> O["Flashcards"]
-        G --> P["Infographic"]
-        G --> Q["Report"]
-        G --> R["Data Table"]
+    subgraph "Capabilities"
+        F2 --> S["AI Chat with Citations"]
+        G --> J["Slides / Audio / Video"]
+        G --> K["Quiz / Flashcards"]
+        G --> L["Infographic / Report"]
+        H --> M["URL / YouTube / File / Text"]
+        I --> N["Fast & Deep Web Research"]
     end
 
     style A fill:#7c3aed,color:#fff
     style F fill:#1a73e8,color:#fff
+    style F2 fill:#1a73e8,color:#fff
+    style S fill:#34a853,color:#fff
     style J fill:#34a853,color:#fff
     style K fill:#34a853,color:#fff
     style L fill:#34a853,color:#fff
-    style M fill:#34a853,color:#fff
-    style N fill:#34a853,color:#fff
-    style O fill:#34a853,color:#fff
-    style P fill:#34a853,color:#fff
-    style Q fill:#34a853,color:#fff
-    style R fill:#34a853,color:#fff
+    style M fill:#ea4335,color:#fff
+    style N fill:#fbbc04,color:#000
 ```
 
 **Hybrid approach:** Chrome DevTools Protocol (CDP) handles Google authentication once, then all operations use direct batchexecute RPC calls — no browser overhead for artifact generation.
