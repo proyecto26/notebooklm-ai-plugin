@@ -1,20 +1,24 @@
 ---
 name: notebooklm
-description: Generate NotebookLM artifacts (slide decks, audio overviews, video overviews, mind maps, flashcards, quizzes, infographics, reports, data tables) from Google NotebookLM notebooks. Use when the user wants to create any NotebookLM output from their uploaded sources.
+description: Interact with Google NotebookLM notebooks — chat with the AI, generate artifacts (slides, audio, video, mind maps, quizzes, flashcards, infographics, reports, data tables), manage sources (add URLs, YouTube, files, text), run research (fast/deep web research), and manage notes. Use when the user wants to query, create content from, or manage their NotebookLM notebooks and sources.
 ---
 
-# NotebookLM Artifact Generator
+# NotebookLM AI Plugin
 
 Supports:
+- Chat with Notebook AI (source-grounded Q&A with citations)
 - Slide Deck generation (PDF/PPTX)
 - Audio Overview (M4A -- deep dive, brief, critique, debate formats)
 - Video Overview (MP4 -- classic, whiteboard, kawaii, anime, watercolor styles)
-- Mind Map (PNG)
-- Flashcards (HTML)
-- Quiz (HTML)
+- Mind Map (HTML)
+- Flashcards (HTML/JSON)
+- Quiz (HTML/JSON)
 - Infographic (PNG -- landscape, portrait, square)
 - Report (Markdown -- briefing doc, study guide, blog post)
 - Data Table (CSV / Google Sheets export)
+- Source management (add URLs, YouTube, files, pasted text; list, delete)
+- Fast/Deep web research with auto-import
+- Notes management (create, update, delete, list)
 - Notebook library management (add, list, search, activate)
 
 ## Quick start
@@ -70,6 +74,69 @@ npx -y bun scripts/main.ts notebooks activate <id>
 
 # Search notebooks
 npx -y bun scripts/main.ts notebooks search <query>
+```
+
+### Chat with Notebook AI
+
+```bash
+# Ask a question about your notebook sources
+npx -y bun scripts/main.ts chat --question "What are the key findings?" --notebook abc123
+
+# Continue a conversation
+npx -y bun scripts/main.ts chat --question "Tell me more about that" --conversation-id <id>
+
+# Get JSON output with citations
+npx -y bun scripts/main.ts chat --question "Summarize the methodology" --json
+```
+
+### Source Management
+
+```bash
+# List all sources in a notebook
+npx -y bun scripts/main.ts sources list --notebook abc123
+
+# Add sources
+npx -y bun scripts/main.ts sources add-url https://example.com/article --notebook abc123
+npx -y bun scripts/main.ts sources add-youtube https://youtube.com/watch?v=xxx --notebook abc123
+npx -y bun scripts/main.ts sources add-text --title "My Notes" --content "Important findings..." --notebook abc123
+npx -y bun scripts/main.ts sources add-file ./paper.pdf --notebook abc123
+
+# Delete a source
+npx -y bun scripts/main.ts sources delete <sourceId> --notebook abc123
+```
+
+Supported file types: PDF, TXT, MD, DOCX, CSV, EPUB, images (PNG, JPG, WEBP, etc.), audio/video files.
+
+### Research
+
+```bash
+# Fast web research (finds relevant sources quickly)
+npx -y bun scripts/main.ts research fast --query "latest AI agent frameworks" --notebook abc123
+
+# Deep research (comprehensive report with analysis)
+npx -y bun scripts/main.ts research deep --query "state of LLM reasoning" --notebook abc123
+
+# Auto-import found sources into the notebook
+npx -y bun scripts/main.ts research fast --query "topic" --notebook abc123 --import
+
+# Check research status
+npx -y bun scripts/main.ts research status --notebook abc123
+```
+
+### Notes
+
+```bash
+# List notes in a notebook
+npx -y bun scripts/main.ts notes list --notebook abc123
+
+# Create a note
+npx -y bun scripts/main.ts notes create --title "Key Takeaways" --content "1. Finding one..." --notebook abc123
+
+# Update a note
+npx -y bun scripts/main.ts notes update <noteId> --title "Updated Title" --content "New content" --notebook abc123
+
+# Delete a note
+npx -y bun scripts/main.ts notes delete <noteId> --notebook abc123
 ```
 
 ### Artifact Generation

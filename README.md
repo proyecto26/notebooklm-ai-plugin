@@ -5,7 +5,7 @@
 [![Artifacts](https://img.shields.io/badge/Artifacts-9_Types-brightgreen)](#supported-artifacts)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Bun-blue)](https://bun.sh)
 
-**Bring Google NotebookLM's full Studio toolkit to Claude Code.** Generate slide decks, audio overviews, videos, mind maps, flashcards, quizzes, infographics, reports, and data tables — just ask Claude.
+**Bring the full Google NotebookLM experience to Claude Code.** Chat with your notebook AI, generate 9 types of artifacts, manage sources (URLs, YouTube, files), run fast/deep web research, and manage notes — just ask Claude.
 
 ---
 
@@ -80,7 +80,13 @@ That's it — the skill handles everything: authentication, notebook management,
 
 ---
 
-## Supported Artifacts
+## Features
+
+### Chat with Notebook AI
+
+Ask questions and get source-grounded answers with citations — the same AI chat experience from NotebookLM's web UI, now in your terminal.
+
+### 9 Artifact Types
 
 | Type | Output | Description |
 |:-----|:-------|:------------|
@@ -94,11 +100,45 @@ That's it — the skill handles everything: authentication, notebook management,
 | **Report** | Markdown | Written report (briefing doc, study guide, blog post) |
 | **Data Table** | CSV / Sheets | Structured data extracted from your sources |
 
+### Source Management
+
+Add and manage notebook sources directly from Claude Code — no need to switch to the browser.
+
+- **URLs / Websites** — Add any web page as a source
+- **YouTube** — Add video transcripts as sources
+- **File Upload** — PDF, TXT, MD, DOCX, CSV, EPUB, images, audio, video
+- **Pasted Text** — Add text content with a custom title
+- **List / Delete** — View and manage existing sources
+
+### Fast & Deep Research
+
+Run web research that feeds directly into your notebook:
+
+- **Fast Research** — Quick web search, finds relevant sources in seconds
+- **Deep Research** — Comprehensive analysis with a full markdown report
+- **Auto-Import** — Automatically add discovered sources to your notebook
+
+### Notes Management
+
+Create, update, and delete notes within your notebooks programmatically.
+
 ---
 
 ## Usage Examples
 
 Just describe what you need to Claude — the skill triggers automatically:
+
+**"What are the main findings in my NotebookLM notebook?"**
+> Chats with the notebook AI and returns source-grounded answers with citations.
+
+**"Add this YouTube video to my notebook: https://youtube.com/watch?v=..."**
+> Adds the video transcript as a source to your active notebook.
+
+**"Upload my research paper paper.pdf to the notebook and generate a study guide"**
+> Uploads the file, then generates a markdown report in study guide format.
+
+**"Run a deep research on 'AI agent frameworks 2026' and import the results"**
+> Starts deep web research, waits for completion, and imports sources into the notebook.
 
 **"Generate a slide deck from my NotebookLM notebook about machine learning"**
 > Creates a PDF/PPTX presentation from your notebook sources.
@@ -109,14 +149,8 @@ Just describe what you need to Claude — the skill triggers automatically:
 **"Make a portrait infographic highlighting the key findings"**
 > Produces a PNG infographic in portrait orientation.
 
-**"Generate a hard quiz with more questions from my study materials and give me the JSON"**
-> Creates a challenging multiple-choice quiz and outputs structured JSON.
-
-**"Log me into NotebookLM, add this notebook, and create a whiteboard-style video explainer"**
-> Full pipeline: authenticates, registers the notebook, and generates a video.
-
-**"Search my notebooks for 'machine learning' and generate flashcards from the first result"**
-> Searches your library and creates study flashcards.
+**"Create a note called 'Key Takeaways' with a summary of the main points"**
+> Creates a new note in the notebook with the specified content.
 
 ---
 

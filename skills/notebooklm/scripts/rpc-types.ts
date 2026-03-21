@@ -23,6 +23,11 @@ export const RPC = {
   DELETE_NOTE: 'AH0mwd',
   SHARE_NOTEBOOK: 'QDyure',
   GET_SHARE_STATUS: 'JFMDGd',
+  REFRESH_SOURCE: 'FLmJqe',
+  START_FAST_RESEARCH: 'Ljjv0c',
+  START_DEEP_RESEARCH: 'QA9ei',
+  POLL_RESEARCH: 'e3bVqc',
+  IMPORT_RESEARCH: 'LBwxtb',
 } as const;
 
 // Artifact type codes sent in CREATE_ARTIFACT RPC

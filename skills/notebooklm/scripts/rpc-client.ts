@@ -162,6 +162,21 @@ export class RPCClient {
     this.cookieMap = cookieMap;
   }
 
+  /** Returns the CSRF token extracted during init(). */
+  getCsrfToken(): string {
+    return this.csrfToken;
+  }
+
+  /** Returns the session ID extracted during init(). */
+  getSessionId(): string {
+    return this.sessionId;
+  }
+
+  /** Returns the cookie map used by this client. */
+  getCookieMap(): Record<string, string> {
+    return this.cookieMap;
+  }
+
   /**
    * Initializes the client by fetching the NotebookLM page and extracting
    * the CSRF token (SNlM0e) and session ID (FdrFJe) from the HTML.

@@ -2,6 +2,8 @@
 import process from 'node:process';
 import path from 'node:path';
 
+import { readFile } from 'node:fs/promises';
+
 import type { ArtifactConfig, ArtifactType } from './types.js';
 import { readCookieMapFromDisk, hasRequiredCookies, writeCookieMapToDisk } from './cookie-store.js';
 import { resolveOutputDir } from './paths.js';
@@ -18,6 +20,27 @@ import {
   recordUsage,
   extractNotebookId,
 } from './notebook-manager.js';
+import { chat } from './chat.js';
+import {
+  listSources,
+  addSourceUrl,
+  addSourceYoutube,
+  addSourceText,
+  addSourceFile,
+  deleteSource,
+} from './source-manager.js';
+import {
+  startFastResearch,
+  startDeepResearch,
+  pollResearchStatus,
+  importResearchSources,
+} from './research-manager.js';
+import {
+  listNotes,
+  createNote,
+  updateNote,
+  deleteNote,
+} from './notes-manager.js';
 
 // ---------------------------------------------------------------------------
 // Arg parser
@@ -425,6 +448,603 @@ async function handleGenerate(parsed: ParsedArgs): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Shared: resolve notebook + RPC init
+// ---------------------------------------------------------------------------
+
+/**
+ * Common bootstrap used by chat, sources, research, and notes handlers.
+ * Resolves the notebook ID (from --notebook flag or active notebook),
+ * loads cookies, verifies auth, initialises the RPCClient, and fetches
+ * the source IDs for the notebook.
+ */
+async function resolveNotebookAndRpc(
+  parsed: ParsedArgs,
+  isJson: boolean,
+): Promise<{ notebookId: string; rpc: RPCClient; sourceIds: string[] }> {
+  // 1. Resolve notebook ID
+  let notebookId: string;
+  const notebookFlag = parsed.flags.notebook as string | undefined;
+  if (notebookFlag) {
+    notebookId = extractNotebookId(notebookFlag);
+  } else {
+    const active = await getActiveNotebook();
+    if (!active) {
+      errorOutput(
+        'No notebook specified and no active notebook set.\n' +
+          'Use --notebook <url|id> or run: notebooks activate <id>',
+      );
+      process.exit(1);
+    }
+    notebookId = active.id;
+  }
+
+  // 2. Load cookies
+  const cookieMap = await readCookieMapFromDisk({
+    log: (msg) => {
+      if (!isJson) textOutput(msg);
+    },
+  });
+
+  if (!hasRequiredCookies(cookieMap)) {
+    errorOutput('No valid cookies found. Run "login" first to authenticate with Google.');
+    process.exit(1);
+  }
+
+  // 3. Init RPC client
+  const rpc = new RPCClient(cookieMap);
+  if (!isJson) textOutput('Initializing RPC client...');
+  await rpc.init();
+
+  // 4. Fetch source IDs for the notebook
+  let sourceIds: string[] = [];
+  try {
+    const listData = await rpc.execute(RPC.LIST_NOTEBOOKS, [null, 1, null, [2]]);
+    if (Array.isArray(listData) && Array.isArray(listData[0])) {
+      const allNotebooks = listData[0] as unknown[][];
+      for (const nb of allNotebooks) {
+        if (!Array.isArray(nb)) continue;
+        const nbJson = JSON.stringify(nb);
+        if (!nbJson.includes(notebookId)) continue;
+        const sources = Array.isArray(nb[1]) ? (nb[1] as unknown[][]) : [];
+        for (const source of sources) {
+          if (!Array.isArray(source)) continue;
+          const idHolder = source[0];
+          if (Array.isArray(idHolder)) {
+            const id = Array.isArray(idHolder[0]) ? (idHolder[0] as string) : (idHolder as unknown as string);
+            const actualId = typeof id === 'string' ? id : Array.isArray(id) ? (id as unknown[])[0] : null;
+            if (typeof actualId === 'string' && actualId.length > 10 && !sourceIds.includes(actualId)) {
+              sourceIds.push(actualId);
+            }
+          }
+        }
+        break;
+      }
+    }
+    if (!isJson) textOutput(`Found ${sourceIds.length} source(s)`);
+  } catch (err) {
+    if (!isJson)
+      textOutput(`Warning: Could not fetch sources: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  return { notebookId, rpc, sourceIds };
+}
+
+// ---------------------------------------------------------------------------
+// Chat command
+// ---------------------------------------------------------------------------
+
+async function handleChat(parsed: ParsedArgs): Promise<void> {
+  const isJson = parsed.flags.json === true;
+  const question = parsed.flags.question as string | undefined;
+
+  if (!question) {
+    errorOutput('Usage: chat --notebook <url|id> --question "your question" [--conversation-id <id>] [--json]');
+    process.exit(1);
+  }
+
+  const { notebookId, rpc, sourceIds } = await resolveNotebookAndRpc(parsed, isJson);
+  const conversationId = parsed.flags['conversation-id'] as string | undefined;
+
+  if (!isJson) textOutput(`\nSending question to notebook ${notebookId}...`);
+
+  try {
+    const result = await chat({
+      notebookId,
+      question,
+      sourceIds,
+      conversationId,
+      cookieMap: rpc.getCookieMap(),
+      csrfToken: rpc.getCsrfToken(),
+      sessionId: rpc.getSessionId(),
+      log: isJson ? undefined : (msg: string) => textOutput(msg),
+    });
+
+    await recordUsage(notebookId);
+
+    if (isJson) {
+      jsonOutput(result);
+    } else {
+      textOutput(`\n--- Answer ---\n`);
+      textOutput(result.answer);
+      if (result.citations.length > 0) {
+        textOutput(`\n--- Citations (${result.citations.length}) ---`);
+        for (const cite of result.citations) {
+          textOutput(`  [${cite.sourceId}] ${cite.text}`);
+        }
+      }
+      textOutput(`\nConversation ID: ${result.conversationId}`);
+      textOutput('(Use --conversation-id to continue this conversation)');
+    }
+  } catch (err) {
+    if (isJson) {
+      jsonOutput({ error: err instanceof Error ? err.message : String(err) });
+    } else {
+      errorOutput(`Chat failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    process.exit(1);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sources commands
+// ---------------------------------------------------------------------------
+
+async function handleSources(parsed: ParsedArgs): Promise<void> {
+  const sub = parsed.subcommand;
+  const isJson = parsed.flags.json === true;
+
+  if (!sub || sub === 'list') {
+    const { notebookId, rpc } = await resolveNotebookAndRpc(parsed, isJson);
+    if (!isJson) textOutput(`\nFetching sources for notebook ${notebookId}...`);
+
+    try {
+      const sources = await listSources({ notebookId, rpc });
+      await recordUsage(notebookId);
+
+      if (isJson) {
+        jsonOutput(sources);
+      } else {
+        if (sources.length === 0) {
+          textOutput('No sources in this notebook.');
+        } else {
+          textOutput(`\nSources (${sources.length}):\n`);
+          for (const src of sources) {
+            textOutput(`  ${src.id}`);
+            if (src.title) textOutput(`    Title: ${src.title}`);
+            if (src.type) textOutput(`    Type:  ${src.type}`);
+            textOutput('');
+          }
+        }
+      }
+    } catch (err) {
+      if (isJson) {
+        jsonOutput({ error: err instanceof Error ? err.message : String(err) });
+      } else {
+        errorOutput(`Failed to list sources: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (sub === 'add-url') {
+    const url = parsed.positional[0];
+    if (!url) {
+      errorOutput('Usage: sources add-url <url> --notebook <url|id>');
+      process.exit(1);
+    }
+    const { notebookId, rpc } = await resolveNotebookAndRpc(parsed, isJson);
+    if (!isJson) textOutput(`\nAdding URL source: ${url}`);
+
+    try {
+      const result = await addSourceUrl({ notebookId, rpc, url });
+      await recordUsage(notebookId);
+
+      if (isJson) {
+        jsonOutput(result);
+      } else {
+        textOutput(`Source added successfully.`);
+        if (result.id) textOutput(`  Source ID: ${result.id}`);
+      }
+    } catch (err) {
+      if (isJson) {
+        jsonOutput({ error: err instanceof Error ? err.message : String(err) });
+      } else {
+        errorOutput(`Failed to add URL source: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (sub === 'add-youtube') {
+    const url = parsed.positional[0];
+    if (!url) {
+      errorOutput('Usage: sources add-youtube <url> --notebook <url|id>');
+      process.exit(1);
+    }
+    const { notebookId, rpc } = await resolveNotebookAndRpc(parsed, isJson);
+    if (!isJson) textOutput(`\nAdding YouTube source: ${url}`);
+
+    try {
+      const result = await addSourceYoutube({ notebookId, rpc, url });
+      await recordUsage(notebookId);
+
+      if (isJson) {
+        jsonOutput(result);
+      } else {
+        textOutput(`YouTube source added successfully.`);
+        if (result.id) textOutput(`  Source ID: ${result.id}`);
+      }
+    } catch (err) {
+      if (isJson) {
+        jsonOutput({ error: err instanceof Error ? err.message : String(err) });
+      } else {
+        errorOutput(`Failed to add YouTube source: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (sub === 'add-text') {
+    const title = parsed.flags.title as string | undefined;
+    const content = parsed.flags.content as string | undefined;
+    if (!title || !content) {
+      errorOutput('Usage: sources add-text --title "title" --content "text" --notebook <url|id>');
+      process.exit(1);
+    }
+    const { notebookId, rpc } = await resolveNotebookAndRpc(parsed, isJson);
+    if (!isJson) textOutput(`\nAdding text source: "${title}"`);
+
+    try {
+      const result = await addSourceText({ notebookId, rpc, title, content });
+      await recordUsage(notebookId);
+
+      if (isJson) {
+        jsonOutput(result);
+      } else {
+        textOutput(`Text source added successfully.`);
+        if (result.id) textOutput(`  Source ID: ${result.id}`);
+      }
+    } catch (err) {
+      if (isJson) {
+        jsonOutput({ error: err instanceof Error ? err.message : String(err) });
+      } else {
+        errorOutput(`Failed to add text source: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (sub === 'add-file') {
+    const filePath = parsed.positional[0];
+    if (!filePath) {
+      errorOutput('Usage: sources add-file <filepath> --notebook <url|id>');
+      process.exit(1);
+    }
+    const { notebookId, rpc } = await resolveNotebookAndRpc(parsed, isJson);
+    const resolvedPath = path.resolve(filePath);
+    if (!isJson) textOutput(`\nAdding file source: ${resolvedPath}`);
+
+    // Read file contents
+    let fileBuffer: Buffer;
+    try {
+      fileBuffer = await readFile(resolvedPath);
+    } catch (err) {
+      errorOutput(`Cannot read file "${resolvedPath}": ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+
+    const fileName = path.basename(resolvedPath);
+
+    try {
+      const result = await addSourceFile({ notebookId, rpc, fileName, fileBuffer });
+      await recordUsage(notebookId);
+
+      if (isJson) {
+        jsonOutput(result);
+      } else {
+        textOutput(`File source added successfully.`);
+        if (result.id) textOutput(`  Source ID: ${result.id}`);
+      }
+    } catch (err) {
+      if (isJson) {
+        jsonOutput({ error: err instanceof Error ? err.message : String(err) });
+      } else {
+        errorOutput(`Failed to add file source: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (sub === 'delete') {
+    const sourceId = parsed.positional[0];
+    if (!sourceId) {
+      errorOutput('Usage: sources delete <sourceId> --notebook <url|id>');
+      process.exit(1);
+    }
+    const { notebookId, rpc } = await resolveNotebookAndRpc(parsed, isJson);
+    if (!isJson) textOutput(`\nDeleting source ${sourceId}...`);
+
+    try {
+      await deleteSource({ notebookId, rpc, sourceId });
+      await recordUsage(notebookId);
+
+      if (isJson) {
+        jsonOutput({ success: true, sourceId });
+      } else {
+        textOutput(`Source "${sourceId}" deleted successfully.`);
+      }
+    } catch (err) {
+      if (isJson) {
+        jsonOutput({ error: err instanceof Error ? err.message : String(err) });
+      } else {
+        errorOutput(`Failed to delete source: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      process.exit(1);
+    }
+    return;
+  }
+
+  errorOutput(`Unknown sources subcommand: ${sub}`);
+  errorOutput('Valid subcommands: list, add-url, add-youtube, add-text, add-file, delete');
+  process.exit(1);
+}
+
+// ---------------------------------------------------------------------------
+// Research commands
+// ---------------------------------------------------------------------------
+
+async function handleResearch(parsed: ParsedArgs): Promise<void> {
+  const sub = parsed.subcommand;
+  const isJson = parsed.flags.json === true;
+
+  if (sub === 'fast' || sub === 'deep') {
+    const query = parsed.flags.query as string | undefined;
+    if (!query) {
+      errorOutput(`Usage: research ${sub} --query "topic" --notebook <url|id> [--import] [--json]`);
+      process.exit(1);
+    }
+
+    const { notebookId, rpc } = await resolveNotebookAndRpc(parsed, isJson);
+    const shouldImport = parsed.flags.import === true;
+
+    if (!isJson) textOutput(`\nStarting ${sub} research: "${query}"`);
+
+    try {
+      // Start research
+      const startFn = sub === 'fast' ? startFastResearch : startDeepResearch;
+      const researchResult = await startFn({ notebookId, rpc, query });
+
+      if (!isJson) textOutput('Research started. Polling for completion...');
+
+      // Poll until complete
+      const pollIntervalMs = sub === 'deep' ? 5000 : 3000;
+      const maxAttempts = sub === 'deep' ? 120 : 60; // 10 min deep, 3 min fast
+      let status = researchResult;
+      let attempts = 0;
+
+      while (status.status !== 'completed' && status.status !== 'failed' && attempts < maxAttempts) {
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+        attempts++;
+        if (!isJson) textOutput(`  Polling... (attempt ${attempts}/${maxAttempts})`);
+        status = await pollResearchStatus({ notebookId, rpc });
+      }
+
+      if (status.status === 'failed') {
+        throw new Error('Research failed. The server returned a failure status.');
+      }
+
+      if (attempts >= maxAttempts) {
+        throw new Error(`Research timed out after ${maxAttempts} poll attempts. Use "research status" to check later.`);
+      }
+
+      // Optionally import found sources
+      if (shouldImport && status.status === 'completed') {
+        if (!isJson) textOutput('\nImporting research sources into notebook...');
+        await importResearchSources({ notebookId, rpc });
+        if (!isJson) textOutput('Sources imported successfully.');
+      }
+
+      await recordUsage(notebookId);
+
+      if (isJson) {
+        jsonOutput(status);
+      } else {
+        textOutput(`\nResearch completed!`);
+        if (status.summary) textOutput(`\nSummary: ${status.summary}`);
+        if (status.sourcesFound !== undefined) textOutput(`Sources found: ${status.sourcesFound}`);
+      }
+    } catch (err) {
+      if (isJson) {
+        jsonOutput({ error: err instanceof Error ? err.message : String(err) });
+      } else {
+        errorOutput(`Research failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (sub === 'status') {
+    const { notebookId, rpc } = await resolveNotebookAndRpc(parsed, isJson);
+    if (!isJson) textOutput(`\nChecking research status for notebook ${notebookId}...`);
+
+    try {
+      const status = await pollResearchStatus({ notebookId, rpc });
+      await recordUsage(notebookId);
+
+      if (isJson) {
+        jsonOutput(status);
+      } else {
+        textOutput(`\nResearch status: ${status.status}`);
+        if (status.summary) textOutput(`Summary: ${status.summary}`);
+        if (status.sourcesFound !== undefined) textOutput(`Sources found: ${status.sourcesFound}`);
+      }
+    } catch (err) {
+      if (isJson) {
+        jsonOutput({ error: err instanceof Error ? err.message : String(err) });
+      } else {
+        errorOutput(`Failed to get research status: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      process.exit(1);
+    }
+    return;
+  }
+
+  errorOutput('Usage: research <fast|deep|status> [options]');
+  errorOutput('  research fast --query "topic" --notebook <url|id> [--import] [--json]');
+  errorOutput('  research deep --query "topic" --notebook <url|id> [--import] [--json]');
+  errorOutput('  research status --notebook <url|id> [--json]');
+  process.exit(1);
+}
+
+// ---------------------------------------------------------------------------
+// Notes commands
+// ---------------------------------------------------------------------------
+
+async function handleNotes(parsed: ParsedArgs): Promise<void> {
+  const sub = parsed.subcommand;
+  const isJson = parsed.flags.json === true;
+
+  if (!sub || sub === 'list') {
+    const { notebookId, rpc } = await resolveNotebookAndRpc(parsed, isJson);
+    if (!isJson) textOutput(`\nFetching notes for notebook ${notebookId}...`);
+
+    try {
+      const notes = await listNotes({ notebookId, rpc });
+      await recordUsage(notebookId);
+
+      if (isJson) {
+        jsonOutput(notes);
+      } else {
+        if (notes.length === 0) {
+          textOutput('No notes in this notebook.');
+        } else {
+          textOutput(`\nNotes (${notes.length}):\n`);
+          for (const note of notes) {
+            textOutput(`  ${note.id}`);
+            if (note.title) textOutput(`    Title: ${note.title}`);
+            if (note.content) textOutput(`    Content: ${note.content.slice(0, 100)}${note.content.length > 100 ? '...' : ''}`);
+            textOutput('');
+          }
+        }
+      }
+    } catch (err) {
+      if (isJson) {
+        jsonOutput({ error: err instanceof Error ? err.message : String(err) });
+      } else {
+        errorOutput(`Failed to list notes: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (sub === 'create') {
+    const title = parsed.flags.title as string | undefined;
+    const content = parsed.flags.content as string | undefined;
+    if (!title || !content) {
+      errorOutput('Usage: notes create --title "title" --content "content" --notebook <url|id>');
+      process.exit(1);
+    }
+    const { notebookId, rpc } = await resolveNotebookAndRpc(parsed, isJson);
+    if (!isJson) textOutput(`\nCreating note: "${title}"`);
+
+    try {
+      const result = await createNote({ notebookId, rpc, title, content });
+      await recordUsage(notebookId);
+
+      if (isJson) {
+        jsonOutput(result);
+      } else {
+        textOutput(`Note created successfully.`);
+        if (result.id) textOutput(`  Note ID: ${result.id}`);
+      }
+    } catch (err) {
+      if (isJson) {
+        jsonOutput({ error: err instanceof Error ? err.message : String(err) });
+      } else {
+        errorOutput(`Failed to create note: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (sub === 'update') {
+    const noteId = parsed.positional[0];
+    if (!noteId) {
+      errorOutput('Usage: notes update <noteId> --title "new title" --content "new content" --notebook <url|id>');
+      process.exit(1);
+    }
+    const title = parsed.flags.title as string | undefined;
+    const content = parsed.flags.content as string | undefined;
+    if (!title && !content) {
+      errorOutput('At least one of --title or --content must be provided.');
+      process.exit(1);
+    }
+    const { notebookId, rpc } = await resolveNotebookAndRpc(parsed, isJson);
+    if (!isJson) textOutput(`\nUpdating note ${noteId}...`);
+
+    try {
+      const result = await updateNote({ notebookId, rpc, noteId, title, content });
+      await recordUsage(notebookId);
+
+      if (isJson) {
+        jsonOutput(result);
+      } else {
+        textOutput(`Note "${noteId}" updated successfully.`);
+      }
+    } catch (err) {
+      if (isJson) {
+        jsonOutput({ error: err instanceof Error ? err.message : String(err) });
+      } else {
+        errorOutput(`Failed to update note: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (sub === 'delete') {
+    const noteId = parsed.positional[0];
+    if (!noteId) {
+      errorOutput('Usage: notes delete <noteId> --notebook <url|id>');
+      process.exit(1);
+    }
+    const { notebookId, rpc } = await resolveNotebookAndRpc(parsed, isJson);
+    if (!isJson) textOutput(`\nDeleting note ${noteId}...`);
+
+    try {
+      await deleteNote({ notebookId, rpc, noteId });
+      await recordUsage(notebookId);
+
+      if (isJson) {
+        jsonOutput({ success: true, noteId });
+      } else {
+        textOutput(`Note "${noteId}" deleted successfully.`);
+      }
+    } catch (err) {
+      if (isJson) {
+        jsonOutput({ error: err instanceof Error ? err.message : String(err) });
+      } else {
+        errorOutput(`Failed to delete note: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      process.exit(1);
+    }
+    return;
+  }
+
+  errorOutput(`Unknown notes subcommand: ${sub}`);
+  errorOutput('Valid subcommands: list, create, update, delete');
+  process.exit(1);
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -506,6 +1126,33 @@ Commands:
   notebooks remove <id>    Remove a notebook
   notebooks activate <id>  Set active notebook
   generate <type>          Generate an artifact
+  chat                     Chat with the notebook AI
+  sources <sub>            Manage notebook sources
+  research <sub>           Run fast or deep research
+  notes <sub>              Manage notebook notes
+
+Chat options:
+  chat --notebook <url|id> --question "your question" [--conversation-id <id>] [--json]
+
+Sources subcommands:
+  sources list                           List sources in a notebook
+  sources add-url <url>                  Add a web URL as a source
+  sources add-youtube <url>              Add a YouTube video as a source
+  sources add-text --title "t" --content "c"  Add inline text as a source
+  sources add-file <filepath>            Upload a file as a source
+  sources delete <sourceId>              Delete a source
+
+Research subcommands:
+  research fast --query "topic"          Start fast research (polls until done)
+  research deep --query "topic"          Start deep research (polls until done)
+  research status                        Check current research status
+  Options: --import (auto-import found sources)  --json
+
+Notes subcommands:
+  notes list                             List notes in a notebook
+  notes create --title "t" --content "c" Create a new note
+  notes update <noteId> [--title "t"] [--content "c"]  Update a note
+  notes delete <noteId>                  Delete a note
 
 Generate options:
   --notebook <url|id>      Notebook URL or library ID (defaults to active)
@@ -521,8 +1168,16 @@ Generate options:
   Infographic: --orientation landscape|portrait|square  --detail concise|standard|detailed
   Report:   --format briefing|study_guide|blog_post|custom
 
+Common options:
+  --notebook <url|id>      Notebook URL or library ID (defaults to active)
+  --json                   Output as JSON
+
 Examples:
   npx -y bun scripts/main.ts login
+  npx -y bun scripts/main.ts chat --notebook xxx --question "Summarize the key points"
+  npx -y bun scripts/main.ts sources add-url https://example.com/article --notebook xxx
+  npx -y bun scripts/main.ts research fast --query "machine learning" --notebook xxx --import
+  npx -y bun scripts/main.ts notes create --title "Key Ideas" --content "..." --notebook xxx
   npx -y bun scripts/main.ts generate audio --notebook https://notebooklm.google.com/notebook/xxx
   npx -y bun scripts/main.ts generate slide_deck --instructions "Focus on key metrics" --output slides.pdf
   npx -y bun scripts/main.ts generate quiz --difficulty medium --quantity more --json`);
@@ -549,6 +1204,18 @@ async function main(): Promise<void> {
       break;
     case 'generate':
       await handleGenerate(parsed);
+      break;
+    case 'chat':
+      await handleChat(parsed);
+      break;
+    case 'sources':
+      await handleSources(parsed);
+      break;
+    case 'research':
+      await handleResearch(parsed);
+      break;
+    case 'notes':
+      await handleNotes(parsed);
       break;
     default:
       errorOutput(`Unknown command: ${parsed.command}`);
