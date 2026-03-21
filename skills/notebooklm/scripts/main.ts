@@ -24,7 +24,7 @@ import { chat } from './chat.js';
 import {
   listSources,
   addSourceUrl,
-  addSourceYoutube,
+  addSourceYouTube,
   addSourceText,
   addSourceFile,
   deleteSource,
@@ -32,8 +32,8 @@ import {
 import {
   startFastResearch,
   startDeepResearch,
-  pollResearchStatus,
-  importResearchSources,
+  pollResearch,
+  importResearch,
 } from './research-manager.js';
 import {
   listNotes,
@@ -598,7 +598,7 @@ async function handleSources(parsed: ParsedArgs): Promise<void> {
     if (!isJson) textOutput(`\nFetching sources for notebook ${notebookId}...`);
 
     try {
-      const sources = await listSources({ notebookId, rpc });
+      const sources = await listSources(rpc, notebookId);
       await recordUsage(notebookId);
 
       if (isJson) {
@@ -637,7 +637,7 @@ async function handleSources(parsed: ParsedArgs): Promise<void> {
     if (!isJson) textOutput(`\nAdding URL source: ${url}`);
 
     try {
-      const result = await addSourceUrl({ notebookId, rpc, url });
+      const result = await addSourceUrl(rpc, notebookId, url);
       await recordUsage(notebookId);
 
       if (isJson) {
@@ -667,7 +667,7 @@ async function handleSources(parsed: ParsedArgs): Promise<void> {
     if (!isJson) textOutput(`\nAdding YouTube source: ${url}`);
 
     try {
-      const result = await addSourceYoutube({ notebookId, rpc, url });
+      const result = await addSourceYouTube(rpc, notebookId, url);
       await recordUsage(notebookId);
 
       if (isJson) {
@@ -698,7 +698,7 @@ async function handleSources(parsed: ParsedArgs): Promise<void> {
     if (!isJson) textOutput(`\nAdding text source: "${title}"`);
 
     try {
-      const result = await addSourceText({ notebookId, rpc, title, content });
+      const result = await addSourceText(rpc, notebookId, title, content);
       await recordUsage(notebookId);
 
       if (isJson) {
@@ -740,7 +740,7 @@ async function handleSources(parsed: ParsedArgs): Promise<void> {
     const fileName = path.basename(resolvedPath);
 
     try {
-      const result = await addSourceFile({ notebookId, rpc, fileName, fileBuffer });
+      const result = await addSourceFile(rpc, notebookId, filePath, rpc.getCookieMap());
       await recordUsage(notebookId);
 
       if (isJson) {
@@ -770,7 +770,7 @@ async function handleSources(parsed: ParsedArgs): Promise<void> {
     if (!isJson) textOutput(`\nDeleting source ${sourceId}...`);
 
     try {
-      await deleteSource({ notebookId, rpc, sourceId });
+      await deleteSource(rpc, notebookId, sourceId);
       await recordUsage(notebookId);
 
       if (isJson) {
@@ -817,7 +817,7 @@ async function handleResearch(parsed: ParsedArgs): Promise<void> {
     try {
       // Start research
       const startFn = sub === 'fast' ? startFastResearch : startDeepResearch;
-      const researchResult = await startFn({ notebookId, rpc, query });
+      const researchResult = await startFn(rpc, notebookId, query);
 
       if (!isJson) textOutput('Research started. Polling for completion...');
 
@@ -831,7 +831,7 @@ async function handleResearch(parsed: ParsedArgs): Promise<void> {
         await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
         attempts++;
         if (!isJson) textOutput(`  Polling... (attempt ${attempts}/${maxAttempts})`);
-        status = await pollResearchStatus({ notebookId, rpc });
+        status = await pollResearch(rpc, notebookId);
       }
 
       if (status.status === 'failed') {
@@ -845,7 +845,7 @@ async function handleResearch(parsed: ParsedArgs): Promise<void> {
       // Optionally import found sources
       if (shouldImport && status.status === 'completed') {
         if (!isJson) textOutput('\nImporting research sources into notebook...');
-        await importResearchSources({ notebookId, rpc });
+        await importResearch(rpc, notebookId, status.taskId || researchResult.taskId, status.sources || []);
         if (!isJson) textOutput('Sources imported successfully.');
       }
 
@@ -874,7 +874,7 @@ async function handleResearch(parsed: ParsedArgs): Promise<void> {
     if (!isJson) textOutput(`\nChecking research status for notebook ${notebookId}...`);
 
     try {
-      const status = await pollResearchStatus({ notebookId, rpc });
+      const status = await pollResearch(rpc, notebookId);
       await recordUsage(notebookId);
 
       if (isJson) {
@@ -915,7 +915,7 @@ async function handleNotes(parsed: ParsedArgs): Promise<void> {
     if (!isJson) textOutput(`\nFetching notes for notebook ${notebookId}...`);
 
     try {
-      const notes = await listNotes({ notebookId, rpc });
+      const notes = await listNotes(rpc, notebookId);
       await recordUsage(notebookId);
 
       if (isJson) {
@@ -955,7 +955,7 @@ async function handleNotes(parsed: ParsedArgs): Promise<void> {
     if (!isJson) textOutput(`\nCreating note: "${title}"`);
 
     try {
-      const result = await createNote({ notebookId, rpc, title, content });
+      const result = await createNote(rpc, notebookId, title, content);
       await recordUsage(notebookId);
 
       if (isJson) {
@@ -991,7 +991,7 @@ async function handleNotes(parsed: ParsedArgs): Promise<void> {
     if (!isJson) textOutput(`\nUpdating note ${noteId}...`);
 
     try {
-      const result = await updateNote({ notebookId, rpc, noteId, title, content });
+      const result = await updateNote(rpc, notebookId, noteId, title ?? '', content ?? '');
       await recordUsage(notebookId);
 
       if (isJson) {
@@ -1020,7 +1020,7 @@ async function handleNotes(parsed: ParsedArgs): Promise<void> {
     if (!isJson) textOutput(`\nDeleting note ${noteId}...`);
 
     try {
-      await deleteNote({ notebookId, rpc, noteId });
+      await deleteNote(rpc, notebookId, noteId);
       await recordUsage(notebookId);
 
       if (isJson) {
