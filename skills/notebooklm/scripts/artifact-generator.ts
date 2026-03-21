@@ -673,19 +673,46 @@ export class ArtifactGenerator {
   /** Fetches interactive HTML content for quiz, flashcards, and mind maps */
   private async fetchInteractiveHtml(notebookId: string, artifactId: string): Promise<string | undefined> {
     try {
-      const params = [[2], notebookId, artifactId];
+      // The v9rmvd RPC takes just the artifact ID as the single parameter
+      const params = [artifactId];
       const sourcePath = `/notebook/${notebookId}`;
       const response = await this.rpc.execute(RPC.GET_INTERACTIVE_HTML, params, sourcePath);
 
       if (typeof response === 'string') return response;
       if (Array.isArray(response)) {
-        // The HTML content is usually a string in the response array
+        // The HTML content is at response[0][9][0] per the SDK reference:
+        //   response[0] -> artifact data array
+        //   response[0][9] -> array containing HTML content
+        //   response[0][9][0] -> the actual HTML string
+        if (Array.isArray(response[0])) {
+          const data = response[0] as unknown[];
+          if (Array.isArray(data[9]) && typeof (data[9] as unknown[])[0] === 'string') {
+            return (data[9] as unknown[])[0] as string;
+          }
+        }
+
+        // Fallback: walk the response looking for a long HTML string
         for (const item of response) {
           if (typeof item === 'string' && item.length > 100) {
             return item;
           }
+          if (Array.isArray(item)) {
+            for (const sub of item as unknown[]) {
+              if (typeof sub === 'string' && sub.length > 100) {
+                return sub;
+              }
+              if (Array.isArray(sub)) {
+                for (const inner of sub as unknown[]) {
+                  if (typeof inner === 'string' && inner.length > 100) {
+                    return inner;
+                  }
+                }
+              }
+            }
+          }
         }
-        // Fallback: return the whole thing as JSON
+
+        // Last resort: return the whole thing as JSON
         return JSON.stringify(response, null, 2);
       }
       return undefined;

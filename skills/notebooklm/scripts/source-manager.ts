@@ -195,55 +195,40 @@ export async function addSourceFile(
   const fileSize = fileStats.size;
   const fileBuffer = await readFile(resolvedPath);
 
-  // Determine MIME type from extension
-  const ext = path.extname(fileName).toLowerCase();
-  const mimeTypes: Record<string, string> = {
-    '.pdf': 'application/pdf',
-    '.txt': 'text/plain',
-    '.md': 'text/markdown',
-    '.csv': 'text/csv',
-    '.doc': 'application/msword',
-    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  };
-  const mimeType = mimeTypes[ext] ?? 'application/octet-stream';
-
-  // Step 1: Register file upload intent
-  const registerParams = [notebookId, fileName, fileSize, mimeType];
+  // Step 1: Register file upload intent via ADD_SOURCE_FILE RPC to get a source ID.
+  // The params format matches the reference: [[[filename]], notebook_id, [2], [1, null...null, [1]]]
+  const registerParams = [
+    [[fileName]],
+    notebookId,
+    [2],
+    [1, null, null, null, null, null, null, null, null, null, [1]],
+  ];
   const registerResponse = await rpc.execute(RPC.ADD_SOURCE_FILE, registerParams, `/notebook/${notebookId}`);
 
-  // Extract the upload URL from the response
-  // The response typically contains a signed upload URL as a string
-  let uploadUrl: string | null = null;
-
-  function findUploadUrl(node: unknown, depth: number): void {
-    if (depth > 10 || uploadUrl) return;
-    if (typeof node === 'string' && node.startsWith('https://') && node.includes('upload')) {
-      uploadUrl = node;
-      return;
-    }
-    if (Array.isArray(node)) {
-      for (const item of node) {
-        findUploadUrl(item, depth + 1);
-      }
-    }
+  // Extract the source ID from the response.
+  // The API returns variably nested arrays like [[[[id]]]], [[[id]]], [[id]], etc.
+  // Recursively unwrap the first element until we find a string.
+  function extractFirstString(data: unknown): string | null {
+    if (typeof data === 'string') return data;
+    if (Array.isArray(data) && data.length > 0) return extractFirstString(data[0]);
+    return null;
   }
 
-  findUploadUrl(registerResponse, 0);
-
-  if (!uploadUrl) {
+  const sourceId = extractFirstString(registerResponse);
+  if (!sourceId) {
     throw new Error(
-      'Failed to get upload URL from file registration RPC. ' +
-      'The response did not contain a valid upload endpoint.',
+      'Failed to extract source ID from file registration RPC (o4cbdc). ' +
+      'The response did not contain a valid source ID string.',
     );
   }
 
-  // Step 2: Initiate resumable upload
+  // Step 2: Start a resumable upload session.
+  // POST to the fixed upload endpoint with the source ID, notebook ID, and filename in a JSON body.
+  const UPLOAD_URL = 'https://notebooklm.google.com/upload/_/';
   const { formatCookieHeader } = await import('./cookie-store.js');
   const cookieHeader = formatCookieHeader(cookieMap);
 
-  const initiateResponse = await fetch(uploadUrl, {
+  const initiateResponse = await fetch(`${UPLOAD_URL}?authuser=0`, {
     method: 'POST',
     headers: {
       'Cookie': cookieHeader,
@@ -251,12 +236,16 @@ export async function addSourceFile(
       'x-goog-upload-protocol': 'resumable',
       'x-goog-upload-command': 'start',
       'x-goog-upload-header-content-length': String(fileSize),
-      'x-goog-upload-header-content-type': mimeType,
+      'x-goog-authuser': '0',
       'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
       'origin': 'https://notebooklm.google.com',
       'referer': 'https://notebooklm.google.com/',
     },
-    body: '',
+    body: JSON.stringify({
+      PROJECT_ID: notebookId,
+      SOURCE_NAME: fileName,
+      SOURCE_ID: sourceId,
+    }),
   });
 
   if (!initiateResponse.ok) {
@@ -276,7 +265,7 @@ export async function addSourceFile(
     );
   }
 
-  // Step 3: Upload file content
+  // Step 3: Upload file content to the resumable upload URL
   const uploadResponse = await fetch(resumableUrl, {
     method: 'POST',
     headers: {
@@ -284,8 +273,8 @@ export async function addSourceFile(
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       'x-goog-upload-command': 'upload, finalize',
       'x-goog-upload-offset': '0',
-      'Content-Type': mimeType,
-      'Content-Length': String(fileSize),
+      'x-goog-authuser': '0',
+      'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8',
       'origin': 'https://notebooklm.google.com',
       'referer': 'https://notebooklm.google.com/',
     },

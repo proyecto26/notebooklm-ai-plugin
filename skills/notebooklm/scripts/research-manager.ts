@@ -168,22 +168,51 @@ export async function pollResearch(
     throw new Error('Empty response from POLL_RESEARCH');
   }
 
-  // response[0] = [taskId, taskInfo]
-  const taskEntry = Array.isArray(data[0]) ? data[0] : data;
+  // The response is a nested array of task entries. The structure may be:
+  //   [[[taskId, taskInfo], [taskId2, taskInfo2], ...]]   (double-wrapped)
+  //   [[taskId, taskInfo], [taskId2, taskInfo2], ...]     (single-wrapped)
+  // We need to unwrap to get the list of individual task entries, then pick
+  // the most recent (last) one.
+
+  // Unwrap one level if needed: if data[0] is an array of arrays, it's the task list
+  let taskList: unknown[] = data;
+  if (
+    Array.isArray(data[0]) &&
+    data[0].length > 0 &&
+    Array.isArray(data[0][0])
+  ) {
+    taskList = data[0] as unknown[];
+  }
+
+  // Find the latest task entry: each entry is [taskId, taskInfo]
+  // Use the last entry in the list as the most recent task
+  let taskEntry: unknown[] | null = null;
+  for (const item of taskList) {
+    if (Array.isArray(item) && item.length >= 2) {
+      taskEntry = item as unknown[];
+    }
+  }
+
+  if (!taskEntry) {
+    throw new Error('No task entry found in POLL_RESEARCH response');
+  }
+
+  // taskEntry[0] = taskId (string)
   const taskId = typeof taskEntry[0] === 'string' ? taskEntry[0] : '';
 
-  const taskInfo = Array.isArray(taskEntry[1]) ? taskEntry[1] : taskEntry;
+  // taskEntry[1] = taskInfo (array with query, sources/summary, status)
+  const taskInfo = Array.isArray(taskEntry[1]) ? (taskEntry[1] as unknown[]) : [];
 
   // taskInfo[1] = [queryText, ...]
   let query = '';
-  if (Array.isArray(taskInfo[1]) && typeof taskInfo[1][0] === 'string') {
-    query = taskInfo[1][0];
+  if (Array.isArray(taskInfo[1]) && typeof (taskInfo[1] as unknown[])[0] === 'string') {
+    query = (taskInfo[1] as unknown[])[0] as string;
   }
 
   // taskInfo[4] = statusCode (1=in_progress, 2=completed, 6=completed_deep)
   let statusCode = 0;
   if (typeof taskInfo[4] === 'number') {
-    statusCode = taskInfo[4];
+    statusCode = taskInfo[4] as number;
   }
 
   const status: 'in_progress' | 'completed' =
@@ -194,12 +223,13 @@ export async function pollResearch(
   let summary: string | undefined;
 
   if (Array.isArray(taskInfo[3])) {
-    const sourcesRaw = taskInfo[3][0];
+    const sourcesAndSummary = taskInfo[3] as unknown[];
+    const sourcesRaw = sourcesAndSummary[0];
     if (Array.isArray(sourcesRaw)) {
       sources = parseSources(sourcesRaw);
     }
-    if (typeof taskInfo[3][1] === 'string') {
-      summary = taskInfo[3][1];
+    if (typeof sourcesAndSummary[1] === 'string') {
+      summary = sourcesAndSummary[1] as string;
     }
   }
 
