@@ -343,7 +343,7 @@ This project is free and open source. Sponsors help keep it maintained and growi
 
 NotebookLM AI Plugin grows with the community. Ideas for new optimization domains, better confidence scoring, or additional templates? Please open a PR!
 
-## License ⚖️
+## ⚖️ License
 This repository is available under the [MIT License](./LICENSE).
 
 ## 👍 Credits
