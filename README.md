@@ -13,14 +13,19 @@
 
 ### Installation
 
-#### Option 1: Clone and Copy (Recommended)
+#### Option 1: CLI Install (Recommended)
 
-Clone the repo and copy the skills folder:
+Use [npx skills](https://github.com/vercel-labs/skills) to install skills directly:
 
 ```bash
-git clone https://github.com/proyecto26/notebooklm-ai-plugin.git
-cp -r notebooklm-ai-plugin/skills/* .claude/skills/
+# Install the skill
+npx skills add proyecto26/notebooklm-ai-plugin
+
+# List available skills
+npx skills add proyecto26/notebooklm-ai-plugin --list
 ```
+
+This automatically installs to your `.claude/skills/` directory.
 
 #### Option 2: Claude Code Plugin
 
@@ -34,19 +39,14 @@ Install via Claude Code's built-in plugin system:
 /plugin install notebooklm-ai-plugin
 ```
 
-#### Option 3: CLI Install
+#### Option 3: Clone and Copy
 
-Use [npx skills](https://github.com/vercel-labs/skills) to install skills directly:
+Clone the repo and copy the skills folder:
 
 ```bash
-# Install the skill
-npx skills add proyecto26/notebooklm-ai-plugin
-
-# List available skills
-npx skills add proyecto26/notebooklm-ai-plugin --list
+git clone https://github.com/proyecto26/notebooklm-ai-plugin.git
+cp -r notebooklm-ai-plugin/skills/* .claude/skills/
 ```
-
-This automatically installs to your `.claude/skills/` directory.
 
 #### Option 4: Git Submodule
 
