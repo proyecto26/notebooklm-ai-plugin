@@ -359,7 +359,9 @@ This repository is available under the [MIT License](./LICENSE).
 - [sherlock-ai-plugin](https://github.com/proyecto26/sherlock-ai-plugin) — CDP authentication patterns
 
 ## Happy vibe coding 💯
+Made with ❤️ by [Proyecto 26](https://proyecto26.com) - Changing the world with small contributions.
 
-Made with ❤️ by [Proyecto 26](https://proyecto26.com)
+One hand can accomplish great things, but many can take you into space and beyond! 🌌
 
-<img width="150px" src="https://avatars0.githubusercontent.com/u/28855608?s=200&v=4" align="right">
+Together we do more, together we are more ❤️ <img width="150px" src="https://avatars0.githubusercontent.com/u/28855608?s=200&v=4" align="right">
+
