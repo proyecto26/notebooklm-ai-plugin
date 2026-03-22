@@ -329,32 +329,32 @@ The plugin captures **all Google domain cookies** (30+) via Chrome DevTools Prot
 
 ---
 
-## Contributing
+## 🌟 Star History
 
-Contributions welcome! Key areas:
+[![Star History Chart](https://api.star-history.com/svg?repos=proyecto26/notebooklm-ai-plugin&type=Date)](https://star-history.com/#proyecto26/notebooklm-ai-plugin-code&Date)
 
-- **Playwright integration** for audio/video/slides download
-- **Data Table** parameter structure fix
-- **Mind Map** polling improvements
-- **Tests** and CI/CD pipeline
+## 💜 Sponsors
 
----
+This project is free and open source. Sponsors help keep it maintained and growing.
 
-## Credits
+[**Become a Sponsor**](https://github.com/sponsors/proyecto26) | [Sponsorship Program](https://proyecto26.com/sponsors/)
+
+## 🤝 Contribution
+
+NotebookLM AI Plugin grows with the community. Ideas for new optimization domains, better confidence scoring, or additional templates? Please open a PR!
+
+## License ⚖️
+This repository is available under the [MIT License](./LICENSE).
+
+## 👍 Credits
 
 - [notebooklm-sdk](https://github.com/agmmnn/notebooklm-sdk) — TypeScript SDK reference for batchexecute protocol
 - [notebooklm-kit](https://github.com/photon-hq/notebooklm-kit) — Artifact creation patterns
 - [notebooklm-py](https://github.com/teng-lin/notebooklm-py) — Python RPC reference implementation
 - [sherlock-ai-plugin](https://github.com/proyecto26/sherlock-ai-plugin) — CDP authentication patterns
 
----
+## Happy vibe coding 💯
 
-## License
+Made with ❤️ by [Proyecto 26](https://proyecto26.com)
 
-MIT - see [LICENSE](LICENSE)
-
----
-
-<p align="center">
-  Made with <b>Claude Code</b> by <a href="https://github.com/proyecto26">Proyecto 26</a>
-</p>
+<img width="150px" src="https://avatars0.githubusercontent.com/u/28855608?s=200&v=4" align="right">
