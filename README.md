@@ -205,8 +205,6 @@ notebooklm-ai-plugin/
 │           ├── paths.ts             # Platform-aware storage
 │           ├── types.ts             # Shared TypeScript types
 │           └── get-cookie.ts        # Quick login helper
-├── package.json
-├── tsconfig.json
 ├── LICENSE
 └── README.md
 ```
