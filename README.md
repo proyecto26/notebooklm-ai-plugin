@@ -341,7 +341,12 @@ This project is free and open source. Sponsors help keep it maintained and growi
 
 ## 🤝 Contribution
 
-NotebookLM AI Plugin grows with the community. Ideas for new optimization domains, better confidence scoring, or additional templates? Please open a PR!
+When contributing to this repository, please first discuss the change you wish to make via issue,
+email, or any other method with the owners of this repository before making a change.
+ 
+Contributions are what make the open-source community such an amazing place to learn, inspire, and create. Any contributions you make are **greatly appreciated** ❤️.
+ 
+You can learn more about how you can contribute to this project in the [contribution guide](https://github.com/proyecto26/.github/blob/master/CONTRIBUTING.md).
 
 ## ⚖️ License
 This repository is available under the [MIT License](./LICENSE).
