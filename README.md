@@ -7,7 +7,7 @@
 
 <img src="https://github.com/proyecto26/sherlock-ai-plugin/blob/main/images/claude-mascot-jumping-animated.svg" width="150">
 
-**Bring the full Google NotebookLM experience to Claude Code.** Chat with your notebook AI, generate 9 types of artifacts, manage sources (URLs, YouTube, files), run fast/deep web research, and manage notes — just ask Claude.
+**Bring the full Google NotebookLM experience to Claude Code, OpenClaw and any other AI agents that execute shell commands.** Chat with your notebook AI, generate 9 types of artifacts, manage sources (URLs, YouTube, files), run fast/deep web research, and manage notes — just ask Claude.
 
 ---
 
