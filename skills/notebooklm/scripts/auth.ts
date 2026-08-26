@@ -8,7 +8,7 @@ import { buildCookieMap, formatCookieHeader, hasRequiredCookies } from './cookie
 import { resolveChromeProfileDir } from './paths.js';
 import type { LogFn } from './types.js';
 
-const NOTEBOOKLM_URL = 'https://notebooklm.google.com/';
+import { NOTEBOOKLM_URL, USER_AGENT, isNotebookLMAppUrl } from './constants.js';
 
 function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -226,7 +226,7 @@ async function validateNotebookLMSession(
     const res = await fetch(NOTEBOOKLM_URL, {
         headers: {
             'Cookie': cookieHeader,
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            'User-Agent': USER_AGENT,
         },
         redirect: 'manual',
         signal,
@@ -235,7 +235,7 @@ async function validateNotebookLMSession(
     // A 302 redirect to accounts.google.com means cookies are not authenticating
     if (res.status >= 300 && res.status < 400) {
         const location = res.headers.get('location') ?? '';
-        if (location.includes('accounts.google.com')) {
+        if (location.includes('accounts.google.com') || location.includes('/login')) {
             throw new Error('NotebookLM redirected to login — cookies are not valid for authenticated access.');
         }
     }
@@ -347,7 +347,7 @@ export async function getNotebookLMCookiesViaChrome(options?: {
                         { sessionId, timeoutMs: 5_000 },
                     );
                     const currentUrl = evalResult?.result?.value ?? '';
-                    if (currentUrl.includes('notebooklm.google.com') && !currentUrl.includes('accounts.google.com')) {
+                    if (isNotebookLMAppUrl(currentUrl) && !currentUrl.includes('/login')) {
                         log?.('[notebooklm] NotebookLM cookies validated successfully.');
                         return cookieMap;
                     }

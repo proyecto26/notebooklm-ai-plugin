@@ -159,81 +159,46 @@ export async function startDeepResearch(
 export async function pollResearch(
   rpc: RPCClient,
   notebookId: string,
+  taskId?: string,
 ): Promise<ResearchResult> {
-  const params = [null, null, notebookId];
-  const response = await rpc.execute(RPC.POLL_RESEARCH, params, `/notebook/${notebookId}`);
+  const response = await rpc.execute(RPC.POLL_RESEARCH, buildPollResearchParams(notebookId), `/notebook/${notebookId}`);
+  const tasks = parseResearchTasks(response);
+  if (tasks.length === 0) throw new Error('No research tasks found in POLL_RESEARCH response');
+  const task = taskId ? tasks.find((t) => t.taskId === taskId) : tasks[tasks.length - 1];
+  if (!task) throw new Error(`Research task ${taskId} not found (active tasks: ${tasks.map((t) => t.taskId).join(', ')})`);
+  return task;
+}
 
-  const data = response as unknown[];
-  if (!Array.isArray(data) || data.length === 0) {
-    throw new Error('Empty response from POLL_RESEARCH');
-  }
+export const buildPollResearchParams = (notebookId: string): unknown[] => [null, null, notebookId];
+export const buildFastResearchParams = (query: string, notebookId: string): unknown[] => [[query, 1], null, 1, notebookId];
+export const buildDeepResearchParams = (query: string, notebookId: string): unknown[] => [null, [1], [query, 1], 5, notebookId];
 
-  // The response is a nested array of task entries. The structure may be:
-  //   [[[taskId, taskInfo], [taskId2, taskInfo2], ...]]   (double-wrapped)
-  //   [[taskId, taskInfo], [taskId2, taskInfo2], ...]     (single-wrapped)
-  // We need to unwrap to get the list of individual task entries, then pick
-  // the most recent (last) one.
-
-  // Unwrap one level if needed: if data[0] is an array of arrays, it's the task list
-  let taskList: unknown[] = data;
-  if (
-    Array.isArray(data[0]) &&
-    data[0].length > 0 &&
-    Array.isArray(data[0][0])
-  ) {
-    taskList = data[0] as unknown[];
-  }
-
-  // Find the latest task entry: each entry is [taskId, taskInfo]
-  // Use the last entry in the list as the most recent task
-  let taskEntry: unknown[] | null = null;
-  for (const item of taskList) {
-    if (Array.isArray(item) && item.length >= 2) {
-      taskEntry = item as unknown[];
+/**
+ * POLL_RESEARCH → [[task, ...]]; task = [taskId, info, [ts], [ts]]
+ * info = [reportId, [query, sourceType], mode, [sources, summary] | null, statusCode]
+ * statusCode: 1 in progress, 2 completed, 6 completed (deep).
+ */
+export function parseResearchTasks(data: unknown): ResearchResult[] {
+  if (!Array.isArray(data)) return [];
+  const container = Array.isArray(data[0]) && Array.isArray((data[0] as unknown[])[0]) ? (data[0] as unknown[]) : data;
+  const tasks: ResearchResult[] = [];
+  for (const item of container) {
+    if (!Array.isArray(item) || typeof item[0] !== 'string') continue;
+    const info = Array.isArray(item[1]) ? (item[1] as unknown[]) : [];
+    const queryBlock = info[1];
+    const query = Array.isArray(queryBlock) && typeof queryBlock[0] === 'string' ? queryBlock[0] : '';
+    const statusCode = typeof info[4] === 'number' ? (info[4] as number) : 0;
+    const status: ResearchResult['status'] = statusCode === 2 || statusCode === 6 ? 'completed' : 'in_progress';
+    let sources: ResearchSource[] = [];
+    let summary: string | undefined;
+    if (Array.isArray(info[3])) {
+      const block = info[3] as unknown[];
+      if (Array.isArray(block[0])) sources = parseSources(block[0]);
+      if (typeof block[1] === 'string') summary = block[1];
     }
+    tasks.push({ taskId: item[0], status, query, sources, summary });
   }
-
-  if (!taskEntry) {
-    throw new Error('No task entry found in POLL_RESEARCH response');
-  }
-
-  // taskEntry[0] = taskId (string)
-  const taskId = typeof taskEntry[0] === 'string' ? taskEntry[0] : '';
-
-  // taskEntry[1] = taskInfo (array with query, sources/summary, status)
-  const taskInfo = Array.isArray(taskEntry[1]) ? (taskEntry[1] as unknown[]) : [];
-
-  // taskInfo[1] = [queryText, ...]
-  let query = '';
-  if (Array.isArray(taskInfo[1]) && typeof (taskInfo[1] as unknown[])[0] === 'string') {
-    query = (taskInfo[1] as unknown[])[0] as string;
-  }
-
-  // taskInfo[4] = statusCode (1=in_progress, 2=completed, 6=completed_deep)
-  let statusCode = 0;
-  if (typeof taskInfo[4] === 'number') {
-    statusCode = taskInfo[4] as number;
-  }
-
-  const status: 'in_progress' | 'completed' =
-    statusCode === 2 || statusCode === 6 ? 'completed' : 'in_progress';
-
-  // taskInfo[3] = [sourcesData, summary]
-  let sources: ResearchSource[] = [];
-  let summary: string | undefined;
-
-  if (Array.isArray(taskInfo[3])) {
-    const sourcesAndSummary = taskInfo[3] as unknown[];
-    const sourcesRaw = sourcesAndSummary[0];
-    if (Array.isArray(sourcesRaw)) {
-      sources = parseSources(sourcesRaw);
-    }
-    if (typeof sourcesAndSummary[1] === 'string') {
-      summary = sourcesAndSummary[1] as string;
-    }
-  }
-
-  return { taskId, status, query, sources, summary };
+  return tasks;
 }
 
 /**

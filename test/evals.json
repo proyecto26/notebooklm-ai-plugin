@@ -1,0 +1,78 @@
+{
+  "skill_name": "notebooklm",
+  "notes": "Live evals — require a valid session (`npx -y bun skills/notebooklm/scripts/main.ts login`) and a notebook with at least one ready source. Set NOTEBOOKLM_TEST_NOTEBOOK to your notebook URL or replace YOUR_NOTEBOOK_ID in each prompt.",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Check whether my NotebookLM login still works and tell me which notebooks I have on my Google account, with how many sources each has.",
+      "expected_output": "Runs `notebooks remote` (or an equivalent RPC), reports success/failure of the session explicitly, and lists notebook names/ids with source counts. If the session is expired it runs `login --force` and explains that the browser needs a sign-in rather than fabricating a list.",
+      "files": [],
+      "expectations": [
+        "The skill's `notebooks remote` command (or LIST_NOTEBOOKS RPC) was executed",
+        "The response states clearly whether authentication succeeded",
+        "Each listed notebook includes an id and a source count",
+        "No notebook names or ids are invented when the command fails"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Add https://en.wikipedia.org/wiki/Retrieval-augmented_generation as a source to my notebook https://notebook.google.com/notebook/YOUR_NOTEBOOK_ID, wait until it's processed, then list the sources so I can confirm it's there.",
+      "expected_output": "Runs `sources add-url`, then `sources list` (repeating until the new source shows status ready), and reports the new source's id, title and status.",
+      "files": [],
+      "expectations": [
+        "`sources add-url` was executed with the Wikipedia URL and the notebook id",
+        "`sources list` was executed after adding",
+        "The final answer includes the new source's id and its status (ready)",
+        "The notebook URL on the notebook.google.com host was accepted without being rewritten to notebooklm.google.com"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Using my active NotebookLM notebook, ask the AI what the main topics of the sources are and give me the answer with its citations as JSON.",
+      "expected_output": "Runs `chat --question ... --json` and returns the JSON answer with an `answer` string, a `conversationId`, and a `citations` array whose entries have source ids.",
+      "files": [],
+      "expectations": [
+        "`chat` was executed with `--json`",
+        "The output contains a non-empty `answer`",
+        "The output contains a `citations` array (possibly empty) with `sourceId` fields when present",
+        "A conversation id is reported so the user can continue the thread"
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "Generate a hard quiz with more questions from my active notebook and save it as ./out/quiz.html. Tell me when it's done and where the file is.",
+      "expected_output": "Runs `generate quiz --difficulty hard --quantity more --output ./out/quiz.html`, waits for completion, and reports the saved path. The file is a self-contained HTML document.",
+      "files": [],
+      "expectations": [
+        "`generate quiz` was executed with `--difficulty hard --quantity more`",
+        "The command completed (status completed) rather than timing out",
+        "./out/quiz.html exists and contains an <html tag",
+        "The final message reports the output path"
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "Make a data table from my active notebook comparing the tools mentioned in the sources (name, purpose, license) and export it as CSV to ./out/tools.csv.",
+      "expected_output": "Runs `generate data_table --instructions \"...\" --output ./out/tools.csv`; the CSV has a header row and at least one data row.",
+      "files": [],
+      "expectations": [
+        "`generate data_table` was executed with `--instructions` describing the comparison",
+        "./out/tools.csv exists",
+        "The CSV's first line has at least two comma-separated header cells",
+        "The CSV has at least one row after the header"
+      ]
+    },
+    {
+      "id": 6,
+      "prompt": "Create a note in my active notebook titled 'Eval note' with the content 'created by the notebooklm skill eval', then list the notes and show me it's there, then delete it.",
+      "expected_output": "Runs `notes create`, `notes list` (note appears with the right title/content), then `notes delete <id>`.",
+      "files": [],
+      "expectations": [
+        "`notes create` was executed with the given title and content",
+        "`notes list` output includes the created note id with the correct content",
+        "`notes delete` was executed with that note id",
+        "The final message confirms creation, listing and deletion"
+      ]
+    }
+  ]
+}

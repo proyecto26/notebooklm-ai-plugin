@@ -2,11 +2,11 @@
 import process from 'node:process';
 import path from 'node:path';
 
-import { readFile } from 'node:fs/promises';
 
 import type { ArtifactConfig, ArtifactType } from './types.js';
 import { readCookieMapFromDisk, hasRequiredCookies, writeCookieMapToDisk } from './cookie-store.js';
 import { resolveOutputDir } from './paths.js';
+import { notebookUrl } from './constants.js';
 import { RPCClient } from './rpc-client.js';
 import { RPC } from './rpc-types.js';
 import { ArtifactGenerator } from './artifact-generator.js';
@@ -20,7 +20,7 @@ import {
   recordUsage,
   extractNotebookId,
 } from './notebook-manager.js';
-import { chat } from './chat.js';
+import { chat, getLastConversationId } from './chat.js';
 import {
   listSources,
   addSourceUrl,
@@ -149,12 +149,18 @@ async function handleLogin(parsed: ParsedArgs): Promise<void> {
     return;
   }
 
-  // Skip if already authenticated (unless --force)
+  // Skip only if the cached session actually works against the live host —
+  // cookie *names* say nothing about expiry or about which host they're scoped to.
   if (!force) {
     const existing = await readCookieMapFromDisk();
     if (hasRequiredCookies(existing)) {
-      textOutput('Already authenticated. Use --force to re-authenticate.');
-      return;
+      try {
+        await new RPCClient(existing).init();
+        textOutput('Already authenticated (session verified). Use --force to re-authenticate.');
+        return;
+      } catch (err) {
+        textOutput(`Cached session is no longer valid (${err instanceof Error ? err.message : String(err)}). Re-authenticating...`);
+      }
     }
   }
 
@@ -200,6 +206,33 @@ async function handleNotebooks(parsed: ParsedArgs): Promise<void> {
   const sub = parsed.subcommand;
   const isJson = parsed.flags.json === true;
 
+  if (sub === 'remote') {
+    const cookieMap = await readCookieMapFromDisk({ log: (msg) => { if (!isJson) textOutput(msg); } });
+    if (!hasRequiredCookies(cookieMap)) {
+      errorOutput('No valid cookies found. Run "login" first to authenticate with Google.');
+      process.exit(1);
+    }
+    const rpc = new RPCClient(cookieMap);
+    await rpc.init();
+    const data = await rpc.execute(RPC.LIST_NOTEBOOKS, [null, 1, null, [2]]);
+    const rows = Array.isArray(data) && Array.isArray(data[0]) ? (data[0] as unknown[][]) : [];
+    const notebooks = rows
+      .filter((r) => Array.isArray(r) && typeof r[2] === 'string')
+      .map((r) => ({
+        id: r[2] as string,
+        name: typeof r[0] === 'string' ? (r[0] as string).replace(/^thought\n/, '') : '',
+        sources: Array.isArray(r[1]) ? (r[1] as unknown[]).length : 0,
+        url: notebookUrl(r[2] as string),
+      }));
+    if (isJson) {
+      jsonOutput(notebooks);
+    } else {
+      textOutput(`\nNotebooks on NotebookLM (${notebooks.length}):`);
+      for (const nb of notebooks) textOutput(`  ${nb.id}  ${nb.name}  (${nb.sources} sources)`);
+    }
+    return;
+  }
+
   if (!sub || sub === 'list') {
     const notebooks = await listNotebooks();
     const active = await getActiveNotebook();
@@ -238,7 +271,7 @@ async function handleNotebooks(parsed: ParsedArgs): Promise<void> {
     const id = extractNotebookId(urlOrId);
     const name = (parsed.flags.name as string) ?? id;
     const description = parsed.flags.description as string | undefined;
-    const url = urlOrId.startsWith('http') ? urlOrId : `https://notebooklm.google.com/notebook/${id}`;
+    const url = urlOrId.startsWith('http') ? urlOrId : notebookUrl(id);
 
     await addNotebook({ id, name, url, description });
     textOutput(`Added notebook "${name}" (${id})`);
@@ -345,42 +378,9 @@ async function handleGenerate(parsed: ParsedArgs): Promise<void> {
   if (!isJson) textOutput('Initializing RPC client...');
   await rpc.init();
 
-  // Fetch notebook sources via LIST_NOTEBOOKS
+  // Fetch ready sources via GET_NOTEBOOK
   if (!isJson) textOutput('Fetching notebook sources...');
-  let sourceIds: string[] = [];
-  try {
-    const listData = await rpc.execute(RPC.LIST_NOTEBOOKS, [null, 1, null, [2]]);
-    // Response: [[notebooks_array]]
-    // notebooks_array: [notebook1, notebook2, ...]
-    // Each notebook: ["title", [[["sourceId"], "name", ...], ...], "notebookId", "emoji", ...]
-    if (Array.isArray(listData) && Array.isArray(listData[0])) {
-      const allNotebooks = listData[0] as unknown[][];
-      for (const nb of allNotebooks) {
-        if (!Array.isArray(nb)) continue;
-        // Find our notebook by checking if notebookId appears as a string in the entry
-        const nbJson = JSON.stringify(nb);
-        if (!nbJson.includes(notebookId)) continue;
-        // Sources are at nb[1] as [[["sourceId"], "sourceName", ...], ...]
-        const sources = Array.isArray(nb[1]) ? nb[1] as unknown[][] : [];
-        for (const source of sources) {
-          if (!Array.isArray(source)) continue;
-          // source[0] = [["sourceId"]] or ["sourceId"]
-          const idHolder = source[0];
-          if (Array.isArray(idHolder)) {
-            const id = Array.isArray(idHolder[0]) ? idHolder[0] as string : idHolder as unknown as string;
-            const actualId = typeof id === 'string' ? id : (Array.isArray(id) ? (id as unknown[])[0] : null);
-            if (typeof actualId === 'string' && actualId.length > 10 && !sourceIds.includes(actualId)) {
-              sourceIds.push(actualId);
-            }
-          }
-        }
-        break; // Found our notebook
-      }
-    }
-    if (!isJson) textOutput(`Found ${sourceIds.length} source(s)`);
-  } catch (err) {
-    if (!isJson) textOutput(`Warning: Could not fetch sources: ${err instanceof Error ? err.message : String(err)}`);
-  }
+  const sourceIds = await fetchReadySourceIds(rpc, notebookId, isJson);
 
   // Build artifact config — only assign format/length flags to the matching type
   const formatFlag = parsed.flags.format as string | undefined;
@@ -394,7 +394,8 @@ async function handleGenerate(parsed: ParsedArgs): Promise<void> {
     language: (parsed.flags.language as string) ?? 'en',
     audioFormat: type === 'audio' ? formatFlag as ArtifactConfig['audioFormat'] : undefined,
     audioLength: type === 'audio' ? lengthFlag as ArtifactConfig['audioLength'] : undefined,
-    videoStyle: parsed.flags.style as ArtifactConfig['videoStyle'],
+    videoStyle: type === 'video' ? parsed.flags.style as ArtifactConfig['videoStyle'] : undefined,
+    videoStylePrompt: type === 'video' ? parsed.flags['style-prompt'] as string | undefined : undefined,
     videoFormat: type === 'video' ? formatFlag as ArtifactConfig['videoFormat'] : undefined,
     difficulty: parsed.flags.difficulty as ArtifactConfig['difficulty'],
     quantity: parsed.flags.quantity as ArtifactConfig['quantity'],
@@ -402,8 +403,14 @@ async function handleGenerate(parsed: ParsedArgs): Promise<void> {
     slideDeckLength: type === 'slide_deck' ? lengthFlag as ArtifactConfig['slideDeckLength'] : undefined,
     infographicOrientation: parsed.flags.orientation as ArtifactConfig['infographicOrientation'],
     infographicDetail: parsed.flags.detail as ArtifactConfig['infographicDetail'],
-    reportFormat: type === 'report' ? formatFlag as ArtifactConfig['reportFormat'] : undefined,
+    infographicStyle: type === 'infographic' ? parsed.flags.style as ArtifactConfig['infographicStyle'] : undefined,
+    reportFormat: type === 'report' ? normalizeReportFormat(formatFlag) : undefined,
+    reportPrompt: type === 'report' ? parsed.flags.prompt as string | undefined : undefined,
   };
+  if (type === 'slide_deck' && (formatFlag === 'pdf' || formatFlag === 'pptx')) config.slideDeckFormat = undefined;
+  const preferPdf =
+    type === 'slide_deck' &&
+    (formatFlag === 'pdf' || (parsed.flags.output as string | undefined)?.toLowerCase().endsWith('.pdf') === true);
 
   // Determine output path
   const outputPath = resolveOutputPath(type, parsed.flags.output as string | undefined);
@@ -413,7 +420,10 @@ async function handleGenerate(parsed: ParsedArgs): Promise<void> {
   if (!isJson) textOutput(`\nGenerating ${type}...`);
 
   try {
-    const result = await generator.createAndWait(config, outputPath);
+    const result = await generator.createAndWait(config, outputPath, {
+      preferPdf,
+      log: isJson ? undefined : (msg) => textOutput(msg),
+    });
     await recordUsage(notebookId);
 
     if (isJson) {
@@ -425,6 +435,7 @@ async function handleGenerate(parsed: ParsedArgs): Promise<void> {
       if (result.title) textOutput(`  Title:  ${result.title}`);
       if (result.filePath) textOutput(`  File:   ${result.filePath}`);
       if (result.downloadUrl) textOutput(`  URL:    ${result.downloadUrl}`);
+      if (result.alternateUrl) textOutput(`  Alt:    ${result.alternateUrl}`);
       if (result.downloadError) {
         textOutput(`\n  Note: Auto-download failed. Open the URL above in your browser to download.`);
         textOutput(`  Reason: ${result.downloadError}`);
@@ -496,37 +507,38 @@ async function resolveNotebookAndRpc(
   await rpc.init();
 
   // 4. Fetch source IDs for the notebook
-  let sourceIds: string[] = [];
-  try {
-    const listData = await rpc.execute(RPC.LIST_NOTEBOOKS, [null, 1, null, [2]]);
-    if (Array.isArray(listData) && Array.isArray(listData[0])) {
-      const allNotebooks = listData[0] as unknown[][];
-      for (const nb of allNotebooks) {
-        if (!Array.isArray(nb)) continue;
-        const nbJson = JSON.stringify(nb);
-        if (!nbJson.includes(notebookId)) continue;
-        const sources = Array.isArray(nb[1]) ? (nb[1] as unknown[][]) : [];
-        for (const source of sources) {
-          if (!Array.isArray(source)) continue;
-          const idHolder = source[0];
-          if (Array.isArray(idHolder)) {
-            const id = Array.isArray(idHolder[0]) ? (idHolder[0] as string) : (idHolder as unknown as string);
-            const actualId = typeof id === 'string' ? id : Array.isArray(id) ? (id as unknown[])[0] : null;
-            if (typeof actualId === 'string' && actualId.length > 10 && !sourceIds.includes(actualId)) {
-              sourceIds.push(actualId);
-            }
-          }
-        }
-        break;
-      }
-    }
-    if (!isJson) textOutput(`Found ${sourceIds.length} source(s)`);
-  } catch (err) {
-    if (!isJson)
-      textOutput(`Warning: Could not fetch sources: ${err instanceof Error ? err.message : String(err)}`);
-  }
+  const sourceIds = await fetchReadySourceIds(rpc, notebookId, isJson);
 
   return { notebookId, rpc, sourceIds };
+}
+
+// ---------------------------------------------------------------------------
+// Artifacts command
+// ---------------------------------------------------------------------------
+
+async function handleArtifacts(parsed: ParsedArgs): Promise<void> {
+  const isJson = parsed.flags.json === true;
+  const sub = parsed.subcommand ?? 'list';
+  if (sub !== 'list') {
+    errorOutput('Usage: artifacts list --notebook <url|id> [--json]');
+    process.exit(1);
+  }
+  const { notebookId, rpc } = await resolveNotebookAndRpc(parsed, isJson);
+  try {
+    const rows = await new ArtifactGenerator(rpc).list(notebookId);
+    await recordUsage(notebookId);
+    const summary = rows.map((r) => ({ id: r.id, type: r.type, status: r.status, title: r.title }));
+    if (isJson) {
+      jsonOutput(summary);
+    } else {
+      textOutput(`\nArtifacts (${summary.length}):`);
+      for (const a of summary) textOutput(`  ${a.id}  ${a.type.padEnd(11)} status=${a.status}  ${a.title}`);
+    }
+  } catch (err) {
+    if (isJson) jsonOutput({ error: err instanceof Error ? err.message : String(err) });
+    else errorOutput(`Failed to list artifacts: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -559,6 +571,14 @@ async function handleChat(parsed: ParsedArgs): Promise<void> {
       log: isJson ? undefined : (msg: string) => textOutput(msg),
     });
 
+    // The id inside the streamed answer is per-turn; the id that continues a
+    // thread comes from GET_LAST_CONVERSATION_ID, so resolve it after the ask.
+    if (!conversationId) {
+      const serverId = await getLastConversationId(rpc, notebookId).catch(() => undefined);
+      if (serverId) result.conversationId = serverId;
+    } else {
+      result.conversationId = conversationId;
+    }
     await recordUsage(notebookId);
 
     if (isJson) {
@@ -612,6 +632,8 @@ async function handleSources(parsed: ParsedArgs): Promise<void> {
             textOutput(`  ${src.id}`);
             if (src.title) textOutput(`    Title: ${src.title}`);
             if (src.type) textOutput(`    Type:  ${src.type}`);
+            textOutput(`    Status: ${src.status}`);
+            if (src.url) textOutput(`    URL:   ${src.url}`);
             textOutput('');
           }
         }
@@ -644,7 +666,7 @@ async function handleSources(parsed: ParsedArgs): Promise<void> {
         jsonOutput(result);
       } else {
         textOutput(`Source added successfully.`);
-        if (result.id) textOutput(`  Source ID: ${result.id}`);
+        for (const src of result) textOutput(`  Source ID: ${src.id}  (${src.title}, ${src.status})`);
       }
     } catch (err) {
       if (isJson) {
@@ -674,7 +696,7 @@ async function handleSources(parsed: ParsedArgs): Promise<void> {
         jsonOutput(result);
       } else {
         textOutput(`YouTube source added successfully.`);
-        if (result.id) textOutput(`  Source ID: ${result.id}`);
+        for (const src of result) textOutput(`  Source ID: ${src.id}  (${src.title}, ${src.status})`);
       }
     } catch (err) {
       if (isJson) {
@@ -705,7 +727,7 @@ async function handleSources(parsed: ParsedArgs): Promise<void> {
         jsonOutput(result);
       } else {
         textOutput(`Text source added successfully.`);
-        if (result.id) textOutput(`  Source ID: ${result.id}`);
+        for (const src of result) textOutput(`  Source ID: ${src.id}  (${src.title}, ${src.status})`);
       }
     } catch (err) {
       if (isJson) {
@@ -728,17 +750,6 @@ async function handleSources(parsed: ParsedArgs): Promise<void> {
     const resolvedPath = path.resolve(filePath);
     if (!isJson) textOutput(`\nAdding file source: ${resolvedPath}`);
 
-    // Read file contents
-    let fileBuffer: Buffer;
-    try {
-      fileBuffer = await readFile(resolvedPath);
-    } catch (err) {
-      errorOutput(`Cannot read file "${resolvedPath}": ${err instanceof Error ? err.message : String(err)}`);
-      process.exit(1);
-    }
-
-    const fileName = path.basename(resolvedPath);
-
     try {
       const result = await addSourceFile(rpc, notebookId, filePath, rpc.getCookieMap());
       await recordUsage(notebookId);
@@ -747,7 +758,7 @@ async function handleSources(parsed: ParsedArgs): Promise<void> {
         jsonOutput(result);
       } else {
         textOutput(`File source added successfully.`);
-        if (result.id) textOutput(`  Source ID: ${result.id}`);
+        textOutput(`  Source ID: ${result.sourceId}  (${result.fileName})`);
       }
     } catch (err) {
       if (isJson) {
@@ -827,15 +838,11 @@ async function handleResearch(parsed: ParsedArgs): Promise<void> {
       let status = researchResult;
       let attempts = 0;
 
-      while (status.status !== 'completed' && status.status !== 'failed' && attempts < maxAttempts) {
+      while (status.status !== 'completed' && attempts < maxAttempts) {
         await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
         attempts++;
         if (!isJson) textOutput(`  Polling... (attempt ${attempts}/${maxAttempts})`);
-        status = await pollResearch(rpc, notebookId);
-      }
-
-      if (status.status === 'failed') {
-        throw new Error('Research failed. The server returned a failure status.');
+        status = await pollResearch(rpc, notebookId, researchResult.taskId);
       }
 
       if (attempts >= maxAttempts) {
@@ -856,7 +863,8 @@ async function handleResearch(parsed: ParsedArgs): Promise<void> {
       } else {
         textOutput(`\nResearch completed!`);
         if (status.summary) textOutput(`\nSummary: ${status.summary}`);
-        if (status.sourcesFound !== undefined) textOutput(`Sources found: ${status.sourcesFound}`);
+        textOutput(`Sources found: ${status.sources.length}`);
+        for (const src of status.sources) textOutput(`  - ${src.title}${src.url ? ` (${src.url})` : ''}`);
       }
     } catch (err) {
       if (isJson) {
@@ -882,7 +890,7 @@ async function handleResearch(parsed: ParsedArgs): Promise<void> {
       } else {
         textOutput(`\nResearch status: ${status.status}`);
         if (status.summary) textOutput(`Summary: ${status.summary}`);
-        if (status.sourcesFound !== undefined) textOutput(`Sources found: ${status.sourcesFound}`);
+        textOutput(`Sources found: ${status.sources.length}`);
       }
     } catch (err) {
       if (isJson) {
@@ -991,7 +999,16 @@ async function handleNotes(parsed: ParsedArgs): Promise<void> {
     if (!isJson) textOutput(`\nUpdating note ${noteId}...`);
 
     try {
-      const result = await updateNote(rpc, notebookId, noteId, title ?? '', content ?? '');
+      // UPDATE_NOTE replaces both fields, so fill in whichever one wasn't given.
+      let finalTitle = title;
+      let finalContent = content;
+      if (!finalTitle || !finalContent) {
+        const existing = (await listNotes(rpc, notebookId)).find((n) => n.id === noteId);
+        if (!existing) throw new Error(`Note "${noteId}" not found in notebook ${notebookId}`);
+        finalTitle ??= existing.title;
+        finalContent ??= existing.content;
+      }
+      const result = await updateNote(rpc, notebookId, noteId, finalTitle, finalContent);
       await recordUsage(notebookId);
 
       if (isJson) {
@@ -1048,43 +1065,31 @@ async function handleNotes(parsed: ParsedArgs): Promise<void> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Extracts source IDs from a GET_NOTEBOOK response.
- * The response structure is deeply nested; sources are typically
- * found as arrays of [sourceId] within the notebook data.
- */
-function extractSourceIds(data: unknown): string[] {
-  const ids: string[] = [];
-
-  function walk(node: unknown, depth: number): void {
-    if (depth > 10) return;
-    if (Array.isArray(node)) {
-      // A source entry often looks like [[sourceId]] or [sourceId, ...]
-      // where sourceId is a long string
-      if (
-        node.length >= 1 &&
-        typeof node[0] === 'string' &&
-        node[0].length >= 20 &&
-        /^[a-zA-Z0-9_-]+$/.test(node[0])
-      ) {
-        // Check if this looks like a source ID (not a notebook ID or other token)
-        // Source IDs are typically in arrays that also contain source metadata
-        if (!ids.includes(node[0])) {
-          ids.push(node[0]);
-        }
-      }
-      for (const item of node) {
-        walk(item, depth + 1);
-      }
+/** Returns the ids of the notebook's sources that are ready to be used. */
+async function fetchReadySourceIds(rpc: RPCClient, notebookId: string, isJson: boolean): Promise<string[]> {
+  try {
+    const sources = await listSources(rpc, notebookId);
+    const ready = sources.filter((s) => s.status === 'ready').map((s) => s.id);
+    if (!isJson) {
+      const skipped = sources.length - ready.length;
+      textOutput(`Found ${ready.length} ready source(s)${skipped ? ` (${skipped} still processing/errored)` : ''}`);
     }
+    return ready;
+  } catch (err) {
+    throw new Error(`Could not fetch the notebook's sources: ${err instanceof Error ? err.message : String(err)}`);
   }
+}
 
-  walk(data, 0);
-
-  // If we found too many IDs, we may have over-captured.
-  // The notebook ID itself will often appear; filter it out.
-  // In practice, the first few IDs are the most relevant.
-  return ids;
+function normalizeReportFormat(flag: string | undefined): ArtifactConfig['reportFormat'] {
+  if (!flag) return undefined;
+  const map: Record<string, ArtifactConfig['reportFormat']> = {
+    briefing: 'briefing',
+    briefing_doc: 'briefing',
+    study_guide: 'study_guide',
+    blog_post: 'blog_post',
+    custom: 'custom',
+  };
+  return map[flag] ?? 'briefing';
 }
 
 /** Builds an output file path based on artifact type and optional user override. */
@@ -1102,10 +1107,10 @@ function resolveOutputPath(type: ArtifactType, userPath?: string): string {
     report: '.md',
     quiz: '.html',
     flashcards: '.html',
-    mind_map: '.html',
+    mind_map: '.json',
     infographic: '.png',
     slide_deck: '.pptx',
-    data_table: '.json',
+    data_table: '.csv',
   };
 
   const ext = extensions[type] ?? '.txt';
@@ -1125,6 +1130,8 @@ Commands:
   notebooks add <url>      Add a notebook to library
   notebooks remove <id>    Remove a notebook
   notebooks activate <id>  Set active notebook
+  notebooks remote         List notebooks from your Google account (auth check)
+  artifacts list           List Studio artifacts in a notebook
   generate <type>          Generate an artifact
   chat                     Chat with the notebook AI
   sources <sub>            Manage notebook sources
@@ -1162,11 +1169,14 @@ Generate options:
   --json                   Output as JSON
 
   Audio:    --format deep_dive|brief|critique|debate  --length short|default|long
-  Video:    --style auto|classic|whiteboard|kawaii|anime|watercolor  --format explainer|brief
-  Slides:   --format detailed|presenter  --length default|short
-  Quiz:     --difficulty easy|medium|hard  --quantity fewer|standard|more
+  Video:    --style auto|classic|whiteboard|kawaii|anime|watercolor|retro_print|heritage|paper_craft
+            --format explainer|brief|cinematic|short
+  Slides:   --format detailed|presenter|pdf|pptx  --length default|short
+  Quiz/Flashcards: --difficulty easy|medium|hard  --quantity fewer|standard|more
   Infographic: --orientation landscape|portrait|square  --detail concise|standard|detailed
-  Report:   --format briefing|study_guide|blog_post|custom
+               --style auto|sketch_note|professional|bento_grid|editorial|instructional|bricks|clay|anime|kawaii|scientific
+  Report:   --format briefing|study_guide|blog_post|custom  [--prompt "custom prompt"]
+  Mind map: JSON tree; Data table: CSV
 
 Common options:
   --notebook <url|id>      Notebook URL or library ID (defaults to active)
@@ -1178,7 +1188,7 @@ Examples:
   npx -y bun scripts/main.ts sources add-url https://example.com/article --notebook xxx
   npx -y bun scripts/main.ts research fast --query "machine learning" --notebook xxx --import
   npx -y bun scripts/main.ts notes create --title "Key Ideas" --content "..." --notebook xxx
-  npx -y bun scripts/main.ts generate audio --notebook https://notebooklm.google.com/notebook/xxx
+  npx -y bun scripts/main.ts generate audio --notebook https://notebook.google.com/notebook/xxx
   npx -y bun scripts/main.ts generate slide_deck --instructions "Focus on key metrics" --output slides.pdf
   npx -y bun scripts/main.ts generate quiz --difficulty medium --quantity more --json`);
 }
@@ -1207,6 +1217,9 @@ async function main(): Promise<void> {
       break;
     case 'chat':
       await handleChat(parsed);
+      break;
+    case 'artifacts':
+      await handleArtifacts(parsed);
       break;
     case 'sources':
       await handleSources(parsed);
