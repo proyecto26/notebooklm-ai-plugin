@@ -47,6 +47,17 @@ describe('batchexecute decoder', () => {
     }
   });
 
+  test('maps a null payload with a FAILED_PRECONDITION (9) status to a client RPCError', () => {
+    try {
+      decodeBatchResponse(fakeBatchBody('R7cb6c', null, [9]), 'R7cb6c');
+      throw new Error('expected throw');
+    } catch (e) {
+      expect(e).toBeInstanceOf(RPCError);
+      expect((e as RPCError).kind).toBe('client');
+      expect((e as RPCError).code).toBe(9);
+    }
+  });
+
   test('flags UserDisplayableError status as a rate limit', () => {
     const status = [3, null, [['type.googleapis.com/google.internal.labs.tailwind.UserDisplayableError', 'x']]];
     try {
