@@ -92,9 +92,13 @@ else:
         errors.append(f".agents/plugins/marketplace.json[{name}] is missing 'category'")
 
 # Claude marketplace: this plugin uses strict:true + auto-discovery (commit b5ccaec),
-# so the entry declares only source:"./" and must NOT re-declare components here.
+# so the entry declares only source:"./", never strict:false, and must NOT re-declare
+# components here — otherwise the marketplace entry becomes the complete definition and
+# plugin.json-based auto-discovery is undermined.
 if entry.get("source") != "./":
     errors.append(f".claude-plugin/marketplace.json[{name}].source is {entry.get('source')!r}, expected './'")
+if entry.get("strict") is False:
+    errors.append(f".claude-plugin/marketplace.json[{name}] sets strict:false; this plugin relies on strict:true + auto-discovery (omit strict or set it true)")
 for comp in ("skills", "commands", "agents", "hooks", "mcpServers"):
     if comp in entry:
         errors.append(f".claude-plugin/marketplace.json[{name}] must not declare '{comp}' (uses auto-discovery)")
@@ -109,6 +113,12 @@ for f in ("name", "version", "description"):
 
 if not os.path.isfile("skills/notebooklm/SKILL.md"):
     errors.append("skills/notebooklm/SKILL.md not found — every host discovers the skill from this path")
+
+# Structural guard: the plugin root the catalog entries point at ('./') must actually
+# contain the plugin payload, so a green gate cannot mean an empty install target.
+for required in (".codex-plugin/plugin.json", "skills/notebooklm/SKILL.md"):
+    if not os.path.isfile(required):
+        errors.append(f"plugin root is missing {required} — the '.' source path would resolve to an incomplete plugin")
 
 if errors:
     print("FAIL: manifest inconsistency")
@@ -128,10 +138,14 @@ else
   skip "claude CLI not on PATH — .claude-plugin/ not validated by its host"
 fi
 
-# Agent Plugins 1.0 schema (Cursor, Copilot)
+# Agent Plugins 1.0 schema (Cursor, Copilot). Pick whichever interpreter has jsonschema.
 schema_url="https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
-if python3 -c 'import jsonschema' 2>/dev/null && schema_json="$(curl -sfL --max-time 10 "$schema_url")"; then
-  python3 - "$schema_json" <<'PY' || exit 1
+py=""
+for cand in python3 python; do
+  if command -v "$cand" >/dev/null 2>&1 && "$cand" -c 'import jsonschema' 2>/dev/null; then py="$cand"; break; fi
+done
+if [[ -n "$py" ]] && schema_json="$(curl -sfL --max-time 10 "$schema_url")"; then
+  "$py" - "$schema_json" <<'PY' || exit 1
 import json, sys
 from jsonschema import Draft202012Validator
 schema = json.loads(sys.argv[1]); data = json.load(open("plugin.json", encoding="utf-8"))
