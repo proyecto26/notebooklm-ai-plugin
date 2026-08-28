@@ -1,0 +1,20 @@
+{
+  "name": "notebooklm-ai-plugin-marketplace",
+  "interface": {
+    "displayName": "NotebookLM"
+  },
+  "plugins": [
+    {
+      "name": "notebooklm-ai-plugin",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

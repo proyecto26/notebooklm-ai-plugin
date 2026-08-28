@@ -2,7 +2,9 @@ import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import { RPCClient } from './rpc-client.js';
-import { RPC } from './rpc-types.js';
+import { RPC, SOURCE_STATUS, SOURCE_TYPE_CODE, templateBlock } from './rpc-types.js';
+import { NOTEBOOKLM_ORIGIN, UPLOAD_URL, USER_AGENT } from './constants.js';
+import { formatCookieHeader } from './cookie-store.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -11,515 +13,291 @@ import { RPC } from './rpc-types.js';
 export interface SourceInfo {
   id: string;
   title: string;
-  type: 'pdf' | 'web' | 'youtube' | 'text' | 'google_docs' | 'unknown';
+  type: string;
   url?: string;
   status: 'processing' | 'ready' | 'error';
   createdAt?: string;
+  wordCount?: number;
 }
 
 // ---------------------------------------------------------------------------
-// Source type detection
+// Source row parsing
+// ---------------------------------------------------------------------------
+// Source row (GET_NOTEBOOK → data[0][1][*], ADD_SOURCE → data[0][*]):
+//   [0] id envelope: "id" | ["id"] | [null, true, ["id"]] (drive-backed)
+//   [1] title
+//   [2] metadata: [docsMeta, wordCount, [createdSec, nanos], [revision], typeCode, [youtubeUrl], ?, [url], ...]
+//   [3] settings: [null, statusCode]
+
+function extractSourceId(envelope: unknown): string | null {
+  if (typeof envelope === 'string') return envelope;
+  if (!Array.isArray(envelope)) return null;
+  if (typeof envelope[0] === 'string') return envelope[0];
+  const deep = envelope[2];
+  if (Array.isArray(deep) && typeof deep[0] === 'string') return deep[0];
+  return null;
+}
+
+export function resolveSourceStatus(code: unknown): SourceInfo['status'] {
+  switch (code) {
+    case SOURCE_STATUS.READY:
+      return 'ready';
+    case SOURCE_STATUS.ERROR:
+      return 'error';
+    default:
+      return 'processing';
+  }
+}
+
+/** Parses one source row into SourceInfo (null if it doesn't look like a source row). */
+export function parseSourceRow(entry: unknown): SourceInfo | null {
+  if (!Array.isArray(entry)) return null;
+  const id = extractSourceId(entry[0]);
+  if (!id || id.length < 8) return null;
+
+  const meta = Array.isArray(entry[2]) ? (entry[2] as unknown[]) : [];
+  const settings = Array.isArray(entry[3]) ? (entry[3] as unknown[]) : [];
+
+  const typeCode = typeof meta[4] === 'number' ? (meta[4] as number) : 0;
+  const urlBlock = meta[7];
+  const ytBlock = meta[5];
+  let url: string | undefined;
+  if (Array.isArray(urlBlock) && typeof urlBlock[0] === 'string') url = urlBlock[0];
+  else if (Array.isArray(ytBlock) && typeof ytBlock[0] === 'string') url = ytBlock[0];
+
+  const ts = meta[2];
+  const createdAt =
+    Array.isArray(ts) && typeof ts[0] === 'number' ? new Date(ts[0] * 1000).toISOString() : undefined;
+
+  return {
+    id,
+    title: typeof entry[1] === 'string' ? entry[1] : id,
+    type: SOURCE_TYPE_CODE[typeCode] ?? 'unknown',
+    url,
+    status: resolveSourceStatus(settings[1]),
+    createdAt,
+    wordCount: typeof meta[1] === 'number' ? (meta[1] as number) : undefined,
+  };
+}
+
+/** Extracts source rows from a GET_NOTEBOOK response (`data[0][1]`). */
+export function parseNotebookSources(data: unknown): SourceInfo[] {
+  const notebook = Array.isArray(data) ? data[0] : undefined;
+  const rows = Array.isArray(notebook) && Array.isArray(notebook[1]) ? (notebook[1] as unknown[]) : [];
+  return rows.map(parseSourceRow).filter((s): s is SourceInfo => s !== null);
+}
+
+/** Extracts the newly created rows from an ADD_SOURCE / ADD_SOURCE_FILE response. */
+export function parseAddedSources(data: unknown): SourceInfo[] {
+  if (!Array.isArray(data)) return [];
+  const direct = data.map(parseSourceRow).filter((s): s is SourceInfo => s !== null);
+  if (direct.length) return direct;
+  const nested = Array.isArray(data[0]) ? (data[0] as unknown[]) : [];
+  return nested.map(parseSourceRow).filter((s): s is SourceInfo => s !== null);
+}
+
+// ---------------------------------------------------------------------------
+// Param builders (exported for tests)
 // ---------------------------------------------------------------------------
 
-/**
- * Infers the source type from the deeply nested metadata in a source entry.
- *
- * Source entries contain type indicators at various positions in the nested
- * arrays. We check for known patterns: URL presence (web), YouTube markers,
- * text/paste markers, Google Docs references, and PDF upload markers.
- */
-function inferSourceType(entry: unknown[]): SourceInfo['type'] {
-  const json = JSON.stringify(entry);
-
-  // YouTube sources contain youtube.com or youtu.be URLs
-  if (json.includes('youtube.com') || json.includes('youtu.be')) return 'youtube';
-
-  // Google Docs sources reference docs.google.com
-  if (json.includes('docs.google.com')) return 'google_docs';
-
-  // Web sources contain http:// or https:// URLs (but not Google Docs / YouTube)
-  if (json.includes('http://') || json.includes('https://')) return 'web';
-
-  // Text/paste sources typically have the content embedded directly
-  // They have a specific structure with [null, [title, content], ...]
-  try {
-    if (Array.isArray(entry[2]) && Array.isArray((entry[2] as unknown[])[1])) {
-      return 'text';
-    }
-  } catch {
-    // ignore
-  }
-
-  // PDF / file uploads are the fallback if no URL pattern matches
-  // Check for file-related markers
-  if (json.includes('.pdf') || json.includes('application/pdf')) return 'pdf';
-
-  return 'unknown';
+export function urlSourceSpec(url: string): unknown[] {
+  return [null, null, [url], null, null, null, null, null, null, null, 1];
 }
 
-/**
- * Extracts a URL from a source entry if one exists.
- */
-function extractSourceUrl(entry: unknown[]): string | undefined {
-  function walk(node: unknown, depth: number): string | undefined {
-    if (depth > 10) return undefined;
-    if (typeof node === 'string' && (node.startsWith('http://') || node.startsWith('https://'))) {
-      // Skip Google internal URLs
-      if (node.includes('lh3.google') || node.includes('googleusercontent.com')) return undefined;
-      return node;
-    }
-    if (Array.isArray(node)) {
-      for (const item of node) {
-        const found = walk(item, depth + 1);
-        if (found) return found;
-      }
-    }
-    return undefined;
-  }
-  return walk(entry, 0);
+export function youtubeSourceSpec(url: string): unknown[] {
+  return [null, null, null, null, null, null, null, [url], null, null, 1];
 }
 
-/**
- * Resolves a numeric status code to a human-readable status string.
- *
- * Status codes observed in source entries:
- *   1 = processing (still being ingested)
- *   2 = ready (fully processed)
- *   3+ = error states
- */
-function resolveSourceStatus(code: number | null | undefined): SourceInfo['status'] {
-  if (code === null || code === undefined) return 'processing';
-  if (code === 2 || code === 3) return 'ready';
-  if (code >= 4) return 'error';
-  return 'processing';
+export function textSourceSpec(title: string, content: string): unknown[] {
+  return [null, [title, content], null, 2, null, null, null, null, null, null, 1];
+}
+
+export function buildAddSourceParams(specs: unknown[][], notebookId: string): unknown[] {
+  return [specs, notebookId, templateBlock()];
+}
+
+export function buildRegisterFileParams(fileName: string, notebookId: string): unknown[] {
+  return [[[fileName]], notebookId, templateBlock()];
+}
+
+export function buildGetNotebookParams(notebookId: string): unknown[] {
+  return [notebookId, null, templateBlock(), null, 0];
+}
+
+export function isYouTubeUrl(url: string): boolean {
+  return /(^|\.)youtube\.com\//.test(url) || url.includes('youtu.be/');
 }
 
 // ---------------------------------------------------------------------------
 // Add sources
 // ---------------------------------------------------------------------------
 
-/**
- * Adds a web URL as a source to a notebook.
- *
- * @param rpc  Initialized RPCClient instance
- * @param notebookId  The notebook ID to add the source to
- * @param url  The web URL to add
- * @returns The raw RPC response
- */
-export async function addSourceUrl(
-  rpc: RPCClient,
-  notebookId: string,
-  url: string,
-): Promise<unknown> {
-  const params = [
-    [[null, null, [url], null, null, null, null, null]],
-    notebookId,
-    [2],
-    null,
-    null,
-  ];
-  return rpc.execute(RPC.ADD_SOURCE, params, `/notebook/${notebookId}`);
+export async function addSourceUrl(rpc: RPCClient, notebookId: string, url: string): Promise<SourceInfo[]> {
+  const spec = isYouTubeUrl(url) ? youtubeSourceSpec(url) : urlSourceSpec(url);
+  const res = await rpc.execute(RPC.ADD_SOURCE, buildAddSourceParams([spec], notebookId), `/notebook/${notebookId}`);
+  return parseAddedSources(res);
+}
+
+export async function addSourceYouTube(rpc: RPCClient, notebookId: string, url: string): Promise<SourceInfo[]> {
+  const full = /^https?:\/\//.test(url) ? url : `https://www.youtube.com/watch?v=${url}`;
+  const res = await rpc.execute(RPC.ADD_SOURCE, buildAddSourceParams([youtubeSourceSpec(full)], notebookId), `/notebook/${notebookId}`);
+  return parseAddedSources(res);
+}
+
+export async function addSourceText(rpc: RPCClient, notebookId: string, title: string, content: string): Promise<SourceInfo[]> {
+  const res = await rpc.execute(RPC.ADD_SOURCE, buildAddSourceParams([textSourceSpec(title, content)], notebookId), `/notebook/${notebookId}`);
+  return parseAddedSources(res);
 }
 
 /**
- * Adds a YouTube video as a source to a notebook.
- *
- * @param rpc  Initialized RPCClient instance
- * @param notebookId  The notebook ID to add the source to
- * @param url  The YouTube video URL
- * @returns The raw RPC response
- */
-export async function addSourceYouTube(
-  rpc: RPCClient,
-  notebookId: string,
-  url: string,
-): Promise<unknown> {
-  const params = [
-    [[null, null, null, null, null, null, null, [url], null, null, 1]],
-    notebookId,
-    [2],
-    [1, null, null, null, null, null, null, null, null, null, [1]],
-  ];
-  return rpc.execute(RPC.ADD_SOURCE, params, `/notebook/${notebookId}`);
-}
-
-/**
- * Adds a plain-text paste as a source to a notebook.
- *
- * @param rpc  Initialized RPCClient instance
- * @param notebookId  The notebook ID to add the source to
- * @param title  The display title for the text source
- * @param content  The text content to add
- * @returns The raw RPC response
- */
-export async function addSourceText(
-  rpc: RPCClient,
-  notebookId: string,
-  title: string,
-  content: string,
-): Promise<unknown> {
-  const params = [
-    [[null, [title, content], null, null, null, null, null, null]],
-    notebookId,
-    [2],
-    null,
-    null,
-  ];
-  return rpc.execute(RPC.ADD_SOURCE, params, `/notebook/${notebookId}`);
-}
-
-/**
- * Adds a file (PDF, etc.) as a source to a notebook via a 3-step upload.
- *
- * Step 1: Register file upload intent via the ADD_SOURCE_FILE RPC (o4cbdc)
- *         to get a signed upload URL.
- * Step 2: POST to the upload endpoint with x-goog-upload headers to initiate
- *         a resumable upload and get the actual upload URL.
- * Step 3: POST the file content to the upload URL.
- *
- * @param rpc  Initialized RPCClient instance
- * @param notebookId  The notebook ID to add the source to
- * @param filePath  Path to the file to upload
- * @param cookieMap  Cookie map for authenticated requests
- * @returns The raw RPC response from the final upload
+ * Adds a local file as a source via the 3-step resumable upload:
+ *   1. ADD_SOURCE_FILE registers the filename and returns the new source id.
+ *   2. POST /upload/_/ (command: start) opens a session; the session URL comes back in x-goog-upload-url.
+ *   3. POST the bytes to the session URL (command: upload, finalize).
  */
 export async function addSourceFile(
   rpc: RPCClient,
   notebookId: string,
   filePath: string,
   cookieMap: Record<string, string>,
-): Promise<unknown> {
+): Promise<{ sourceId: string; fileName: string }> {
   const resolvedPath = path.resolve(filePath);
   const fileName = path.basename(resolvedPath);
-  const fileStats = await stat(resolvedPath);
-  const fileSize = fileStats.size;
+  const fileSize = (await stat(resolvedPath)).size;
   const fileBuffer = await readFile(resolvedPath);
 
-  // Step 1: Register file upload intent via ADD_SOURCE_FILE RPC to get a source ID.
-  // The params format matches the reference: [[[filename]], notebook_id, [2], [1, null...null, [1]]]
-  const registerParams = [
-    [[fileName]],
-    notebookId,
-    [2],
-    [1, null, null, null, null, null, null, null, null, null, [1]],
-  ];
-  const registerResponse = await rpc.execute(RPC.ADD_SOURCE_FILE, registerParams, `/notebook/${notebookId}`);
-
-  // Extract the source ID from the response.
-  // The API returns variably nested arrays like [[[[id]]]], [[[id]]], [[id]], etc.
-  // Recursively unwrap the first element until we find a string.
-  function extractFirstString(data: unknown): string | null {
-    if (typeof data === 'string') return data;
-    if (Array.isArray(data) && data.length > 0) return extractFirstString(data[0]);
-    return null;
-  }
-
-  const sourceId = extractFirstString(registerResponse);
+  const registerResponse = await rpc.execute(
+    RPC.ADD_SOURCE_FILE,
+    buildRegisterFileParams(fileName, notebookId),
+    `/notebook/${notebookId}`,
+  );
+  const registered = parseAddedSources(registerResponse);
+  const sourceId = registered[0]?.id ?? firstString(registerResponse);
   if (!sourceId) {
-    throw new Error(
-      'Failed to extract source ID from file registration RPC (o4cbdc). ' +
-      'The response did not contain a valid source ID string.',
-    );
+    throw new Error('ADD_SOURCE_FILE (o4cbdc) did not return a source ID for the upload.');
   }
 
-  // Step 2: Start a resumable upload session.
-  // POST to the fixed upload endpoint with the source ID, notebook ID, and filename in a JSON body.
-  const UPLOAD_URL = 'https://notebooklm.google.com/upload/_/';
-  const { formatCookieHeader } = await import('./cookie-store.js');
   const cookieHeader = formatCookieHeader(cookieMap);
+  // Origin/Referer must name the host the request is actually sent to — Google's
+  // origin-bound checks reject a mismatch between the two personal hosts.
+  const headersFor = (url: string) => {
+    const origin = new URL(url).origin;
+    return {
+      'Cookie': cookieHeader,
+      'User-Agent': USER_AGENT,
+      'Accept': '*/*',
+      'x-goog-authuser': '0',
+      'origin': origin,
+      'referer': `${origin}/`,
+    };
+  };
 
-  const initiateResponse = await fetch(`${UPLOAD_URL}?authuser=0`, {
+  const initiate = await fetch(`${UPLOAD_URL}?authuser=0`, {
     method: 'POST',
     headers: {
-      'Cookie': cookieHeader,
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      ...headersFor(UPLOAD_URL),
+      'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
       'x-goog-upload-protocol': 'resumable',
       'x-goog-upload-command': 'start',
       'x-goog-upload-header-content-length': String(fileSize),
-      'x-goog-authuser': '0',
-      'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-      'origin': 'https://notebooklm.google.com',
-      'referer': 'https://notebooklm.google.com/',
+      'x-goog-upload-header-content-type': guessMimeType(fileName),
     },
-    body: JSON.stringify({
-      PROJECT_ID: notebookId,
-      SOURCE_NAME: fileName,
-      SOURCE_ID: sourceId,
-    }),
+    body: JSON.stringify({ PROJECT_ID: notebookId, SOURCE_NAME: fileName, SOURCE_ID: sourceId }),
   });
-
-  if (!initiateResponse.ok) {
-    const errorText = await initiateResponse.text().catch(() => '');
-    throw new Error(
-      `File upload initiation failed: ${initiateResponse.status} ${initiateResponse.statusText}` +
-      (errorText ? `\n${errorText.slice(0, 500)}` : ''),
-    );
+  if (!initiate.ok) {
+    const errorText = await initiate.text().catch(() => '');
+    throw new Error(`File upload initiation failed: ${initiate.status} ${initiate.statusText}${errorText ? `\n${errorText.slice(0, 500)}` : ''}`);
+  }
+  const sessionUrl = initiate.headers.get('x-goog-upload-url');
+  if (!sessionUrl) throw new Error('File upload initiation did not return an x-goog-upload-url header.');
+  const sessionHost = new URL(sessionUrl).hostname;
+  if (sessionHost !== new URL(NOTEBOOKLM_ORIGIN).hostname && !sessionHost.endsWith('.google.com')) {
+    throw new Error(`Refusing to upload to unexpected host: ${sessionUrl}`);
   }
 
-  // Extract the resumable upload URL from the response header
-  const resumableUrl = initiateResponse.headers.get('x-goog-upload-url');
-  if (!resumableUrl) {
-    throw new Error(
-      'File upload initiation did not return a resumable upload URL. ' +
-      'The x-goog-upload-url header was missing from the response.',
-    );
-  }
-
-  // Step 3: Upload file content to the resumable upload URL
-  const uploadResponse = await fetch(resumableUrl, {
+  const upload = await fetch(sessionUrl, {
     method: 'POST',
     headers: {
-      'Cookie': cookieHeader,
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      ...headersFor(sessionUrl),
+      'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8',
       'x-goog-upload-command': 'upload, finalize',
       'x-goog-upload-offset': '0',
-      'x-goog-authuser': '0',
-      'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8',
-      'origin': 'https://notebooklm.google.com',
-      'referer': 'https://notebooklm.google.com/',
     },
     body: fileBuffer,
   });
-
-  if (!uploadResponse.ok) {
-    const errorText = await uploadResponse.text().catch(() => '');
-    throw new Error(
-      `File upload failed: ${uploadResponse.status} ${uploadResponse.statusText}` +
-      (errorText ? `\n${errorText.slice(0, 500)}` : ''),
-    );
+  if (!upload.ok) {
+    const errorText = await upload.text().catch(() => '');
+    throw new Error(`File upload failed: ${upload.status} ${upload.statusText}${errorText ? `\n${errorText.slice(0, 500)}` : ''}`);
   }
-
-  const uploadResult = await uploadResponse.text();
-
-  // Try to parse the upload result as JSON
-  try {
-    return JSON.parse(uploadResult);
-  } catch {
-    return uploadResult;
-  }
+  return { sourceId, fileName };
 }
 
-// ---------------------------------------------------------------------------
-// List sources
-// ---------------------------------------------------------------------------
-
-/**
- * Lists all sources in a notebook.
- *
- * Uses the GET_NOTEBOOK RPC to fetch the full notebook data, then parses
- * out the sources array. Each source entry contains the source ID, title,
- * type metadata, and processing status.
- *
- * @param rpc  Initialized RPCClient instance
- * @param notebookId  The notebook ID to list sources for
- * @returns Array of parsed source information
- */
-export async function listSources(
-  rpc: RPCClient,
-  notebookId: string,
-): Promise<SourceInfo[]> {
-  const params = [notebookId, null, [2], null, 0];
-  const response = await rpc.execute(RPC.GET_NOTEBOOK, params, `/notebook/${notebookId}`);
-
-  const data = response as unknown[];
-  if (!Array.isArray(data)) {
-    throw new Error('GET_NOTEBOOK returned unexpected response format');
-  }
-
-  const sources: SourceInfo[] = [];
-
-  // Sources are typically at response[0][1] as an array of source entries.
-  // Each source entry structure:
-  //   [[id], title, [null, wordCount, [timestamp], ...type...], [null, statusCode], ...]
-  const sourceArray = extractSourceArray(data);
-
-  for (const entry of sourceArray) {
-    if (!Array.isArray(entry)) continue;
-
-    const sourceInfo = parseSourceEntry(entry);
-    if (sourceInfo) {
-      sources.push(sourceInfo);
-    }
-  }
-
-  return sources;
-}
-
-/**
- * Extracts the sources array from a GET_NOTEBOOK response.
- *
- * The response structure can vary, so we try multiple paths:
- *   - data[0][1] (most common)
- *   - data[0] if it's an array of source-like entries
- *   - Recursive search for arrays of source entries
- */
-function extractSourceArray(data: unknown[]): unknown[][] {
-  // Try data[0][1] — most common location
-  if (Array.isArray(data[0])) {
-    const inner = data[0] as unknown[];
-    if (Array.isArray(inner[1])) {
-      const candidates = inner[1] as unknown[];
-      // Verify these look like source entries (arrays with nested structure)
-      if (candidates.length > 0 && Array.isArray(candidates[0])) {
-        return candidates as unknown[][];
-      }
-    }
-
-    // Try data[0] directly if it contains source-like arrays
-    if (inner.length > 0 && Array.isArray(inner[0]) && Array.isArray((inner[0] as unknown[])[0])) {
-      return inner as unknown[][];
-    }
-  }
-
-  // Fallback: search for arrays that look like source entries
-  const found: unknown[][] = [];
-  findSourceArrays(data, found, 0);
-  return found;
-}
-
-/**
- * Recursively searches for source-entry-like arrays in a nested structure.
- * A source entry is an array whose first element is itself an array containing
- * a single string (the source ID).
- */
-function findSourceArrays(node: unknown, result: unknown[][], depth: number): void {
-  if (depth > 5 || !Array.isArray(node)) return;
-
-  // Check if this looks like an array of source entries
-  let allSourceLike = true;
-  let sourceCount = 0;
-
-  for (const item of node) {
-    if (!Array.isArray(item)) {
-      allSourceLike = false;
-      continue;
-    }
-    // A source entry starts with [[sourceId]] or [sourceId]
-    const first = (item as unknown[])[0];
-    if (Array.isArray(first) && first.length === 1 && typeof first[0] === 'string') {
-      sourceCount++;
-    } else if (typeof first === 'string' && first.length > 10) {
-      sourceCount++;
-    }
-  }
-
-  if (allSourceLike && sourceCount > 0 && sourceCount === (node as unknown[]).length) {
-    for (const item of node) {
-      if (Array.isArray(item)) {
-        result.push(item as unknown[]);
-      }
-    }
-    return;
-  }
-
-  // Recurse
-  for (const item of node) {
-    if (Array.isArray(item)) {
-      findSourceArrays(item, result, depth + 1);
-    }
-  }
-}
-
-/**
- * Parses a single source entry from the GET_NOTEBOOK response into a SourceInfo.
- *
- * Expected structure (approximate):
- *   [[id], title, [metadata...], [null, statusCode], ...]
- * or:
- *   [id, title, [metadata...], ...]
- */
-function parseSourceEntry(entry: unknown[]): SourceInfo | null {
-  if (entry.length < 2) return null;
-
-  // Extract source ID
-  let id: string | null = null;
-  const first = entry[0];
-  if (Array.isArray(first) && first.length >= 1 && typeof first[0] === 'string') {
-    id = first[0];
-  } else if (typeof first === 'string' && first.length > 5) {
-    id = first;
-  }
-
-  if (!id) return null;
-
-  // Extract title — typically at entry[1]
-  let title = '';
-  if (typeof entry[1] === 'string') {
-    title = entry[1];
-  } else if (Array.isArray(entry[1]) && typeof (entry[1] as unknown[])[0] === 'string') {
-    title = (entry[1] as unknown[])[0] as string;
-  }
-
-  // If no title found, use the ID as fallback
-  if (!title) {
-    title = id.slice(0, 20) + '...';
-  }
-
-  // Extract status code
-  let statusCode: number | null = null;
-  for (let i = 2; i < entry.length; i++) {
-    if (Array.isArray(entry[i])) {
-      const sub = entry[i] as unknown[];
-      // Status is often in [null, statusCode] patterns
-      if (sub.length >= 2 && sub[0] === null && typeof sub[1] === 'number') {
-        statusCode = sub[1];
-        break;
-      }
-      // Or directly as a number in a nested array
-      if (sub.length >= 1 && typeof sub[0] === 'number') {
-        statusCode = sub[0];
-        break;
-      }
-    }
-  }
-
-  // Extract creation timestamp
-  let createdAt: string | undefined;
-  for (let i = 2; i < entry.length; i++) {
-    if (Array.isArray(entry[i])) {
-      const sub = entry[i] as unknown[];
-      // Timestamps are typically large numbers (Unix epoch in seconds or milliseconds)
-      for (const item of sub) {
-        if (Array.isArray(item)) {
-          for (const ts of item as unknown[]) {
-            if (typeof ts === 'number' && ts > 1_600_000_000 && ts < 2_000_000_000) {
-              createdAt = new Date(ts * 1000).toISOString();
-            } else if (typeof ts === 'number' && ts > 1_600_000_000_000 && ts < 2_000_000_000_000) {
-              createdAt = new Date(ts).toISOString();
-            }
-          }
-        }
-      }
-    }
-  }
-
-  return {
-    id,
-    title,
-    type: inferSourceType(entry),
-    url: extractSourceUrl(entry),
-    status: resolveSourceStatus(statusCode),
-    createdAt,
+/** MIME type for the resumable-upload start header (NotebookLM sniffs content anyway). */
+export function guessMimeType(fileName: string): string {
+  const ext = path.extname(fileName).toLowerCase();
+  const map: Record<string, string> = {
+    '.pdf': 'application/pdf',
+    '.txt': 'text/plain',
+    '.md': 'text/markdown',
+    '.csv': 'text/csv',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    '.epub': 'application/epub+zip',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp',
+    '.gif': 'image/gif',
+    '.mp3': 'audio/mpeg',
+    '.m4a': 'audio/mp4',
+    '.wav': 'audio/wav',
+    '.mp4': 'video/mp4',
+    '.webm': 'video/webm',
   };
+  return map[ext] ?? 'application/octet-stream';
+}
+
+function firstString(data: unknown): string | null {
+  if (typeof data === 'string') return data;
+  if (Array.isArray(data)) {
+    for (const item of data) {
+      const s = firstString(item);
+      if (s) return s;
+    }
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
-// Delete source
+// List / delete / wait
 // ---------------------------------------------------------------------------
 
-/**
- * Deletes a source from a notebook.
- *
- * @param rpc  Initialized RPCClient instance
- * @param notebookId  The notebook ID containing the source
- * @param sourceId  The ID of the source to delete
- * @returns The raw RPC response
- */
-export async function deleteSource(
+export async function listSources(rpc: RPCClient, notebookId: string): Promise<SourceInfo[]> {
+  const response = await rpc.execute(RPC.GET_NOTEBOOK, buildGetNotebookParams(notebookId), `/notebook/${notebookId}`);
+  if (!Array.isArray(response)) throw new Error('GET_NOTEBOOK returned an unexpected response format');
+  return parseNotebookSources(response);
+}
+
+export async function deleteSource(rpc: RPCClient, notebookId: string, sourceId: string): Promise<void> {
+  await rpc.execute(RPC.DELETE_SOURCE, [[[sourceId]]], `/notebook/${notebookId}`);
+}
+
+/** Polls until every given source is ready (or errored). */
+export async function waitForSources(
   rpc: RPCClient,
   notebookId: string,
-  sourceId: string,
-): Promise<unknown> {
-  const params = [notebookId, [sourceId], [2]];
-  return rpc.execute(RPC.DELETE_SOURCE, params, `/notebook/${notebookId}`);
+  sourceIds: string[],
+  options?: { timeoutMs?: number; intervalMs?: number },
+): Promise<SourceInfo[]> {
+  const timeoutMs = options?.timeoutMs ?? 120_000;
+  const start = Date.now();
+  let interval = options?.intervalMs ?? 1500;
+  while (Date.now() - start < timeoutMs) {
+    const sources = await listSources(rpc, notebookId);
+    const mine = sources.filter((s) => sourceIds.includes(s.id));
+    if (mine.length === sourceIds.length && mine.every((s) => s.status !== 'processing')) return mine;
+    await new Promise((r) => setTimeout(r, interval));
+    interval = Math.min(interval * 1.5, 10_000);
+  }
+  throw new Error(`Timed out waiting for sources to finish processing: ${sourceIds.join(', ')}`);
 }

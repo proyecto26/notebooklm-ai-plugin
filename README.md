@@ -15,6 +15,15 @@
 
 ### Installation
 
+### Standards
+
+This plugin follows the [Agent Plugins](https://agent-plugins.org/) v1.0.0 packaging standard
+(root [`plugin.json`](./plugin.json), validated against the official schema) and its skill follows
+the [Agent Skills](https://agentskills.io/) spec (`skills/notebooklm/SKILL.md`). It also ships the
+Claude Code manifests (`.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`) so it installs
+natively in Claude Code. The two manifest sets coexist — portable clients read the root `plugin.json`,
+Claude Code reads `.claude-plugin/`.
+
 #### Option 1: CLI Install (Recommended)
 
 Use [npx skills](https://github.com/vercel-labs/skills) to install skills directly:
@@ -76,7 +85,7 @@ The first time you use the skill, it opens Chrome for Google login. Cookies are 
 
 Once authenticated, just describe what you want:
 
-> *"Add this notebook https://notebooklm.google.com/notebook/YOUR_ID and generate a study guide from it"*
+> *"Add this notebook https://notebook.google.com/notebook/YOUR_ID and generate a study guide from it"*
 
 That's it — the skill handles everything: authentication, notebook management, artifact creation, polling, and download.
 
@@ -327,7 +336,8 @@ The plugin captures **all Google domain cookies** (30+) via Chrome DevTools Prot
 
 - **Audio / Video / Slides download:** These streaming media types are created successfully on NotebookLM's servers, but auto-download requires browser-level cookie handling. The plugin returns the artifact URL for manual browser download. Static media (infographics, reports) download automatically.
 - **Data Table:** Parameter structure for type 9 artifacts is still being reverse-engineered.
-- **RPC method IDs:** Google can change these at any time. If generation fails, check for updated IDs in the [notebooklm-sdk](https://github.com/agmmnn/notebooklm-sdk) project.
+- **Host:** The skill targets `notebook.google.com` and accepts both `notebook.google.com` and `notebooklm.google.com` notebook URLs. Set `NOTEBOOKLM_BASE_URL` to override the host.
+- **RPC method IDs / payloads:** Google can change these at any time. The wire shapes are pinned by unit tests (`cd skills/notebooklm && npx -y bun test tests/unit`) and live tests (`npx -y bun test tests/live.test.ts`). If a call fails with "method ID may have changed" or `INVALID_ARGUMENT`, compare `scripts/rpc-types.ts` with the [notebooklm-py](https://github.com/teng-lin/notebooklm-py) and [notebooklm-sdk](https://github.com/agmmnn/notebooklm-sdk) projects.
 
 ---
 

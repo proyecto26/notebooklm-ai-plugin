@@ -44,6 +44,7 @@ export interface ArtifactConfig {
     // Video
     videoStyle?:
         | 'auto'
+        | 'custom'
         | 'classic'
         | 'whiteboard'
         | 'kawaii'
@@ -52,7 +53,9 @@ export interface ArtifactConfig {
         | 'retro_print'
         | 'heritage'
         | 'paper_craft';
-    videoFormat?: 'explainer' | 'brief';
+    videoFormat?: 'explainer' | 'brief' | 'cinematic' | 'short';
+    /** Free-text style description, only used when videoStyle === 'custom'. */
+    videoStylePrompt?: string;
     // Quiz/Flashcards
     difficulty?: 'easy' | 'medium' | 'hard';
     quantity?: 'fewer' | 'standard' | 'more';
@@ -62,8 +65,22 @@ export interface ArtifactConfig {
     // Infographic
     infographicOrientation?: 'landscape' | 'portrait' | 'square';
     infographicDetail?: 'concise' | 'standard' | 'detailed';
+    infographicStyle?:
+        | 'auto'
+        | 'sketch_note'
+        | 'professional'
+        | 'bento_grid'
+        | 'editorial'
+        | 'instructional'
+        | 'bricks'
+        | 'clay'
+        | 'anime'
+        | 'kawaii'
+        | 'scientific';
     // Report
     reportFormat?: 'briefing' | 'study_guide' | 'blog_post' | 'custom';
+    /** Full prompt for reportFormat === 'custom' (defaults to a generic report prompt). */
+    reportPrompt?: string;
 }
 
 export interface ArtifactResult {
@@ -72,6 +89,8 @@ export interface ArtifactResult {
     status: 'processing' | 'pending' | 'completed' | 'failed';
     title?: string;
     downloadUrl?: string;
+    /** Alternate download URL (slide decks: PDF when downloadUrl is PPTX). */
+    alternateUrl?: string;
     content?: string;
     filePath?: string;
     downloadError?: string;

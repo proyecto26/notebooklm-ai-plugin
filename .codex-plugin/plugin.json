@@ -1,0 +1,38 @@
+{
+  "name": "notebooklm-ai-plugin",
+  "version": "1.1.0",
+  "description": "Generate NotebookLM artifacts (slides, audio, video, mind maps, quizzes, flashcards, infographics, reports, data tables) from your notebooks. Use when the user wants to create any NotebookLM Studio output from their uploaded sources.",
+  "author": {
+    "name": "Proyecto 26",
+    "url": "https://github.com/proyecto26"
+  },
+  "homepage": "https://github.com/proyecto26/notebooklm-ai-plugin",
+  "repository": "https://github.com/proyecto26/notebooklm-ai-plugin",
+  "license": "MIT",
+  "keywords": [
+    "notebooklm",
+    "google",
+    "artifacts",
+    "slides",
+    "audio",
+    "video",
+    "quiz",
+    "flashcards",
+    "infographic",
+    "report"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "NotebookLM",
+    "shortDescription": "Generate NotebookLM Studio artifacts from your notebook sources",
+    "longDescription": "Chat with a NotebookLM notebook and generate Studio artifacts (slides, audio & video overviews, mind maps, quizzes, flashcards, infographics, reports, data tables) from its sources, plus manage sources, run fast/deep web research, and manage notes.",
+    "developerName": "Proyecto 26",
+    "category": "Productivity",
+    "websiteURL": "https://github.com/proyecto26/notebooklm-ai-plugin",
+    "defaultPrompt": [
+      "Generate an audio deep dive from my NotebookLM notebook",
+      "Create a study guide report from my notebook sources",
+      "Make a quiz from my NotebookLM notebook and save it as quiz.html"
+    ]
+  }
+}

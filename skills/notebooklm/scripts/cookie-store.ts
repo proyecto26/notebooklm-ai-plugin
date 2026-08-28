@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import type { LogFn, NotebookLMCookieFileV1 } from './types.js';
 import { resolveCookiePath } from './paths.js';
+import { NOTEBOOKLM_HOST } from './constants.js';
 
 export const NOTEBOOKLM_COOKIE_NAMES = [
     'SID',
@@ -61,29 +62,38 @@ function pickCookieValue<T extends { name?: string; value?: string; domain?: str
     return (preferredDomain ?? googleDomain ?? matches[0])?.value;
 }
 
+/**
+ * Ranks a cookie's domain for de-duplication: the same cookie name can exist for
+ * several Google hosts (e.g. the per-service `OSID` for the legacy
+ * notebooklm.google.com AND the current notebook.google.com). The app host must win,
+ * then the `.google.com` root, then anything else — otherwise the stale copy is sent
+ * and Google answers with a ServiceLogin redirect (`osid=1`).
+ */
+function cookieDomainRank(domain: string, path: string): number {
+    if (domain === NOTEBOOKLM_HOST) return 3;
+    if (domain === 'google.com' && path === '/') return 2;
+    if (domain === 'google.com') return 1;
+    return 0;
+}
+
 export function buildCookieMap<
     T extends { name?: string; value?: string; domain?: string; path?: string; url?: string },
 >(cookies: T[]): Record<string, string> {
     const cookieMap: Record<string, string> = {};
+    const rank: Record<string, number> = {};
 
     // Capture ALL Google-domain cookies, not just a hardcoded list.
     // Google's passive login check requires cookies like OSID, __Secure-OSID,
     // __Host-GAPS, LSID, __Host-1PLSID, ACCOUNT_CHOOSER, etc. that are
     // not in the standard auth cookie set but are essential for session validation.
-    const seen = new Set<string>();
     for (const cookie of cookies) {
         if (!cookie.name || typeof cookie.value !== 'string' || !cookie.value) continue;
         const domain = resolveCookieDomain(cookie);
-        if (!domain || (!domain.endsWith('google.com') && !domain.includes('notebooklm'))) continue;
-
-        // For duplicates, prefer .google.com root domain with path /
-        if (seen.has(cookie.name)) {
-            if (domain === 'google.com' && (cookie.path ?? '/') === '/') {
-                cookieMap[cookie.name] = cookie.value;
-            }
-        } else {
-            seen.add(cookie.name);
+        if (!domain || !domain.endsWith('google.com')) continue;
+        const r = cookieDomainRank(domain, cookie.path ?? '/');
+        if (!(cookie.name in cookieMap) || r > rank[cookie.name]) {
             cookieMap[cookie.name] = cookie.value;
+            rank[cookie.name] = r;
         }
     }
 

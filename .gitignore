@@ -1,4 +1,5 @@
 node_modules/
+skills/notebooklm/node_modules/
 dist/
 *.js
 *.d.ts
@@ -22,3 +23,6 @@ Thumbs.db
 
 # Claude state files
 .claude/
+
+# skill eval workspaces (contain account-specific outputs)
+skills/notebooklm-workspace/

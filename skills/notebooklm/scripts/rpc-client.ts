@@ -7,11 +7,7 @@ import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 
 import { formatCookieHeader } from './cookie-store.js';
-
-const BATCHEXECUTE_URL = 'https://notebooklm.google.com/_/LabsTailwindUi/data/batchexecute';
-const NOTEBOOKLM_URL = 'https://notebooklm.google.com/';
-const USER_AGENT =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+import { BATCHEXECUTE_URL, NOTEBOOKLM_ORIGIN, NOTEBOOKLM_URL, USER_AGENT, isNotebookLMAppUrl } from './constants.js';
 
 /**
  * Extracts Set-Cookie values from a response and merges them into the cookie map.
@@ -82,74 +78,135 @@ async function fetchWithCookieJar(
   throw new Error(`Too many redirects while fetching ${url} (>${maxRedirects}).`);
 }
 
+/** Thrown when the batchexecute envelope reports an error for the requested RPC. */
+export class RPCError extends Error {
+  constructor(
+    message: string,
+    public readonly rpcId: string,
+    public readonly code?: number,
+    public readonly kind: 'rate_limit' | 'auth' | 'not_found' | 'server' | 'client' | 'drift' | 'unknown' = 'unknown',
+  ) {
+    super(message);
+    this.name = 'RPCError';
+  }
+}
+
+/** Strips Google's anti-XSSI prefix `)]}'` (+ newline) when present. */
+export function stripAntiXssi(text: string): string {
+  return text.replace(/^\)\]\}'\r?\n?/, '');
+}
+
 /**
- * Parses the batchexecute chunked response format.
- *
- * The response body (after stripping the anti-XSSI prefix) consists of
- * alternating lines: a byte-count line followed by a JSON payload line.
- * We look for arrays whose first element is "wrb.fr" and second element
- * matches the requested rpcId. The actual data is at index [2] (a JSON
- * string to re-parse) with a fallback to index [5].
+ * Splits an `rt=c` chunked body into its JSON payloads.
+ * The body alternates `<byte-count>\n<json>\n`; byte counts are advisory (Google
+ * appears to count UTF-16 units) so we parse line-by-line instead of by length.
  */
-function parseBatchResponse(text: string, rpcId: string): unknown {
-  // Strip anti-XSSI prefix
-  const stripped = text.replace(/^\)\]\}'\n/, '');
-
-  const lines = stripped.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) continue;
-
-    // Try to parse each line as JSON
-    let parsed: unknown;
+export function parseChunkedPayloads(text: string): unknown[] {
+  const payloads: unknown[] = [];
+  for (const rawLine of stripAntiXssi(text).split('\n')) {
+    const line = rawLine.trim();
+    if (!line || /^\d+$/.test(line)) continue;
     try {
-      parsed = JSON.parse(line);
+      payloads.push(JSON.parse(line));
     } catch {
+      /* not a JSON line */
+    }
+  }
+  return payloads;
+}
+
+/** Collects `["wrb.fr", ...]` / `["er", ...]` envelopes from parsed payloads. */
+export function collectEnvelopes(payloads: unknown[]): unknown[][] {
+  const envelopes: unknown[][] = [];
+  for (const parsed of payloads) {
+    if (!Array.isArray(parsed)) continue;
+    if (parsed[0] === 'wrb.fr' || parsed[0] === 'er') {
+      envelopes.push(parsed);
       continue;
     }
+    for (const item of parsed) {
+      if (Array.isArray(item) && (item[0] === 'wrb.fr' || item[0] === 'er')) envelopes.push(item);
+    }
+  }
+  return envelopes;
+}
 
-    if (!Array.isArray(parsed)) continue;
+function describeStatus(rpcId: string, status: unknown): RPCError | null {
+  if (!Array.isArray(status)) return null;
+  const code = typeof status[0] === 'number' ? status[0] : undefined;
+  const json = JSON.stringify(status);
+  if (json.includes('UserDisplayableError')) {
+    return new RPCError(
+      `RPC ${rpcId} was rejected by NotebookLM (rate limit or quota reached, or the feature is unavailable for this account).`,
+      rpcId, code, 'rate_limit',
+    );
+  }
+  if (code === undefined || code === 0) return null;
+  const map: Record<number, [string, RPCError['kind']]> = {
+    3: ['INVALID_ARGUMENT — the request payload was rejected (the RPC shape may have changed)', 'client'],
+    5: ['NOT_FOUND — the notebook/artifact/source does not exist or is not accessible', 'not_found'],
+    7: ['PERMISSION_DENIED — cookies may belong to a different account', 'auth'],
+    8: ['RESOURCE_EXHAUSTED — quota or rate limit', 'rate_limit'],
+    9: ['FAILED_PRECONDITION — the request payload was rejected (the RPC shape may have changed)', 'client'],
+    13: ['INTERNAL server error', 'server'],
+    14: ['UNAVAILABLE — server temporarily unavailable', 'server'],
+    16: ['UNAUTHENTICATED — cookies are expired, run "login --force"', 'auth'],
+  };
+  const [msg, kind] = map[code] ?? [`status code ${code}`, 'unknown'];
+  return new RPCError(`RPC ${rpcId} failed: ${msg}`, rpcId, code, kind);
+}
 
-    // The top-level array may contain nested arrays
-    // Look for ["wrb.fr", rpcId, dataJsonString, ...]
-    const envelopes: unknown[][] = [];
-    if (typeof parsed[0] === 'string' && parsed[0] === 'wrb.fr') {
-      envelopes.push(parsed);
-    } else {
-      for (const item of parsed) {
-        if (Array.isArray(item) && item[0] === 'wrb.fr') {
-          envelopes.push(item);
-        }
-      }
+/**
+ * Decodes a batchexecute response for one RPC id.
+ *
+ * Envelope layout: `["wrb.fr", rpcId, "<inner json>", null, null, [status...], "generic"]`.
+ * Google may send several envelopes for the same id (placeholders with a null
+ * payload followed by the real one) — the last non-null payload wins. `["er", ...]`
+ * envelopes and non-OK status blocks (index 5) become RPCError. A missing id when
+ * other ids are present means the method id has rotated ("drift").
+ *
+ * Returns `null` for RPCs that legitimately return nothing (updates, deletes).
+ */
+export function decodeBatchResponse(text: string, rpcId: string): unknown {
+  const envelopes = collectEnvelopes(parseChunkedPayloads(text));
+  let result: unknown = null;
+  let sawId = false;
+  let statusError: RPCError | null = null;
+  const seenIds = new Set<string>();
+
+  for (const env of envelopes) {
+    if (typeof env[1] === 'string') seenIds.add(env[1]);
+    if (env[1] !== rpcId) continue;
+    sawId = true;
+
+    if (env[0] === 'er') {
+      const code = typeof env[2] === 'number' ? env[2] : undefined;
+      throw describeStatus(rpcId, [code]) ?? new RPCError(`RPC ${rpcId} returned an error frame`, rpcId, code);
     }
 
-    for (const envelope of envelopes) {
-      if (envelope[1] !== rpcId) continue;
-
-      // Data is at index [2] as a JSON string
-      if (typeof envelope[2] === 'string' && envelope[2].length > 0) {
-        try {
-          return JSON.parse(envelope[2]);
-        } catch {
-          return envelope[2];
-        }
+    const payload = env[2];
+    if (typeof payload === 'string' && payload.length > 0) {
+      try {
+        result = JSON.parse(payload);
+      } catch {
+        result = payload;
       }
-
-      // Fallback to index [5]
-      if (envelope[5] !== undefined && envelope[5] !== null) {
-        if (typeof envelope[5] === 'string') {
-          try {
-            return JSON.parse(envelope[5]);
-          } catch {
-            return envelope[5];
-          }
-        }
-        return envelope[5];
-      }
+    } else if (payload === null || payload === undefined) {
+      statusError = describeStatus(rpcId, env[5]) ?? statusError;
     }
   }
 
-  throw new Error(`No response found for RPC ${rpcId} in batchexecute response`);
+  if (!sawId) {
+    if (envelopes.length === 0) {
+      throw new RPCError(`RPC ${rpcId}: response contained no batchexecute envelopes (empty body or login page?)`, rpcId, undefined, 'unknown');
+    }
+    throw new RPCError(
+      `RPC ${rpcId} not present in response (got: ${[...seenIds].join(', ') || 'none'}). The method ID may have changed.`,
+      rpcId, undefined, 'drift',
+    );
+  }
+  if (result === null && statusError) throw statusError;
+  return result;
 }
 
 export class RPCClient {
@@ -194,11 +251,21 @@ export class RPCClient {
       redirect: 'manual',
     });
 
-    // Handle redirect — if we get 302, cookies aren't working
+    // Handle redirect — a redirect to /login or accounts.google.com means the
+    // cookies aren't authenticating. A redirect to a *different* app host means
+    // NOTEBOOKLM_ORIGIN is stale (Google renamed the service) — surface that distinctly.
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get('location') ?? '';
+      let resolved = location;
+      try { resolved = new URL(location, NOTEBOOKLM_URL).toString(); } catch { /* keep raw */ }
+      if (isNotebookLMAppUrl(resolved) && !resolved.includes('/login')) {
+        throw new Error(
+          `NotebookLM redirected (${res.status}) to ${resolved.substring(0, 80)}. ` +
+            'The app origin may have changed — set NOTEBOOKLM_BASE_URL or update scripts/constants.ts.',
+        );
+      }
       throw new Error(
-        `NotebookLM redirected (${res.status}) to ${location.substring(0, 80)}. Cookies may be expired — try running "login --force".`,
+        `NotebookLM redirected (${res.status}) to ${resolved.substring(0, 80)}. Cookies may be expired — try running "login --force".`,
       );
     }
 
@@ -215,6 +282,11 @@ export class RPCClient {
       throw new Error(
         'NotebookLM redirected to Google login. Cookies may be expired — try running "login --force".',
       );
+    }
+
+    // The app shell embeds its own bundle name; a page without it is not NotebookLM.
+    if (!html.includes('LabsTailwindUi') && !html.includes('WIZ_global_data')) {
+      throw new Error('Unexpected page content from NotebookLM (not the app shell). Try running "login --force".');
     }
 
     // Extract SNlM0e (CSRF token)
@@ -266,8 +338,8 @@ export class RPCClient {
         'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
         'Cookie': formatCookieHeader(this.cookieMap),
         'User-Agent': USER_AGENT,
-        'origin': 'https://notebooklm.google.com',
-        'referer': 'https://notebooklm.google.com/',
+        'origin': NOTEBOOKLM_ORIGIN,
+        'referer': NOTEBOOKLM_URL,
         'x-same-domain': '1',
       },
       body: body.toString(),
@@ -282,7 +354,7 @@ export class RPCClient {
     }
 
     const responseText = await response.text();
-    return parseBatchResponse(responseText, rpcId);
+    return decodeBatchResponse(responseText, rpcId);
   }
 
   /**
@@ -298,12 +370,12 @@ export class RPCClient {
     // Strategy 1: Simple fetch with redirect: 'follow' (works for static images like infographics)
     try {
       const simpleRes = await fetch(url, {
-        headers: { 'User-Agent': USER_AGENT, 'Referer': 'https://notebooklm.google.com/' },
+        headers: { 'User-Agent': USER_AGENT, 'Referer': NOTEBOOKLM_URL },
         redirect: 'follow',
       });
       const ct = simpleRes.headers.get('content-type') ?? '';
       if (simpleRes.ok && !ct.includes('text/html') && simpleRes.body) {
-        const nodeStream = Readable.fromWeb(simpleRes.body as Parameters<typeof Readable.fromWeb>[0]);
+        const nodeStream = Readable.fromWeb(simpleRes.body as unknown as Parameters<typeof Readable.fromWeb>[0]);
         const fileStream = createWriteStream(outputPath);
         await pipeline(nodeStream, fileStream);
         return;
@@ -329,7 +401,7 @@ export class RPCClient {
               headers: {
                 'Cookie': googleCookieHeader,
                 'User-Agent': USER_AGENT,
-                'Referer': 'https://notebooklm.google.com/',
+                'Referer': NOTEBOOKLM_URL,
               },
             },
             (res) => {

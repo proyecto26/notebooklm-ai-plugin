@@ -1,185 +1,109 @@
 import { RPCClient } from './rpc-client.js';
 import { RPC } from './rpc-types.js';
 
-// ---------------------------------------------------------------------------
-// Interfaces
-// ---------------------------------------------------------------------------
-
 export interface NoteInfo {
   id: string;
   title: string;
   content: string;
+  /** True when the content is a mind-map JSON tree rather than prose. */
+  isMindMap?: boolean;
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Row parsing
 // ---------------------------------------------------------------------------
+// GET_NOTES_AND_MIND_MAPS → [[row, ...], [timestamp]]  (or a bare row list)
+// Row shapes seen in the wild:
+//   [id, [id, content, metadata, null, title]]      historical
+//   [null, [id, content, metadata, null, title]]    current web client
+//   [id, null, 2]                                   soft-deleted (skip)
+// CREATE_NOTE → [[id, "", metadata, null, "New Note"]]
 
-/**
- * Extracts a note ID from a CREATE_NOTE response.
- * Walks the response looking for the first string that looks like a Google-style ID.
- */
-function extractNoteId(response: unknown): string {
-  if (typeof response === 'string' && response.length >= 8) {
-    return response;
-  }
-  if (Array.isArray(response)) {
-    // Check direct top-level string
-    if (typeof response[0] === 'string' && response[0].length >= 8) {
-      return response[0];
-    }
-    // Check nested first element
-    if (Array.isArray(response[0]) && typeof response[0][0] === 'string' && response[0][0].length >= 8) {
-      return response[0][0];
-    }
-    // Recursive fallback
-    const id = findIdInNested(response);
-    if (id) return id;
-  }
-  throw new Error('Failed to extract note ID from CREATE_NOTE response');
+const INNER_ID = 0;
+const INNER_CONTENT = 1;
+const INNER_TITLE = 4;
+const DELETED_SENTINEL = 2;
+
+export function looksLikeMindMap(content: string): boolean {
+  return content.includes('"children":') || content.includes('"nodes":');
 }
 
-/**
- * Recursively searches a nested structure for a string that looks like a
- * Google-style ID (long alphanumeric/base64 string).
- */
-function findIdInNested(data: unknown, depth = 0): string | undefined {
-  if (depth > 5) return undefined;
-  if (typeof data === 'string' && data.length >= 8 && /^[a-zA-Z0-9_-]+$/.test(data)) {
-    return data;
+export function parseNoteRow(item: unknown): NoteInfo | null {
+  if (!Array.isArray(item) || item.length < 2) return null;
+  if (item[1] === null && item[2] === DELETED_SENTINEL) return null;
+
+  const inner = Array.isArray(item[1]) ? (item[1] as unknown[]) : Array.isArray(item[0]) ? (item[0] as unknown[]) : null;
+  if (inner) {
+    const id = typeof inner[INNER_ID] === 'string' ? inner[INNER_ID] : typeof item[0] === 'string' ? item[0] : null;
+    if (!id) return null;
+    const content = typeof inner[INNER_CONTENT] === 'string' ? inner[INNER_CONTENT] : '';
+    const title = typeof inner[INNER_TITLE] === 'string' ? inner[INNER_TITLE] : '';
+    return { id, title, content, isMindMap: looksLikeMindMap(content) };
   }
-  if (Array.isArray(data)) {
-    for (const item of data) {
-      const found = findIdInNested(item, depth + 1);
-      if (found) return found;
-    }
+
+  // Flat legacy shape: [id, content, metadata, null, title]
+  if (typeof item[0] === 'string' && item[0].length >= 8) {
+    const content = typeof item[1] === 'string' ? item[1] : '';
+    const title = typeof item[4] === 'string' ? item[4] : '';
+    return { id: item[0], title, content, isMindMap: looksLikeMindMap(content) };
   }
-  return undefined;
+  return null;
 }
 
-/**
- * Parses a single note entry from a GET_NOTES_AND_MIND_MAPS response array.
- * Note entries are typically arrays with [noteId, title, content, ...] or
- * variations of that structure.
- */
-function parseNoteEntry(entry: unknown): NoteInfo | null {
-  if (!Array.isArray(entry)) return null;
+export function parseNotesList(data: unknown): NoteInfo[] {
+  if (!Array.isArray(data) || data.length === 0) return [];
+  const first = data[0];
+  // A row starts with a string id (or null in the current wrapper shape); a
+  // container starts with a row (an array). `[[row, ...], [timestamp]]` → rows at data[0].
+  const isRow = Array.isArray(first) && (typeof first[0] === 'string' || first[0] === null);
+  const container = isRow ? data : Array.isArray(first) ? first : [];
+  return (container as unknown[]).map(parseNoteRow).filter((n): n is NoteInfo => n !== null);
+}
 
-  // Primary shape: [noteId, title, content, ...]
-  const id = typeof entry[0] === 'string' && entry[0].length >= 8 ? entry[0] : null;
-  if (!id) return null;
-
-  let title = '';
-  let content = '';
-
-  if (typeof entry[1] === 'string') {
-    title = entry[1];
-  }
-  if (typeof entry[2] === 'string') {
-    content = entry[2];
-  }
-
-  // Some responses nest the note body inside a sub-array
-  // e.g., [noteId, [content, title, ...], ...]
-  if (Array.isArray(entry[1])) {
-    const inner = entry[1];
-    if (typeof inner[0] === 'string') content = inner[0];
-    if (typeof inner[1] === 'string') title = inner[1];
-  }
-
-  return { id, title, content };
+export function extractCreatedNoteId(response: unknown): string {
+  const row = Array.isArray(response) ? response[0] : undefined;
+  const id = Array.isArray(row) && typeof row[0] === 'string' ? row[0] : typeof row === 'string' ? row : null;
+  if (!id) throw new Error('CREATE_NOTE did not return a note ID');
+  return id;
 }
 
 // ---------------------------------------------------------------------------
-// Notes CRUD functions
+// Param builders (exported for tests)
+// ---------------------------------------------------------------------------
+
+export const buildCreateNoteParams = (notebookId: string, title: string): unknown[] => [notebookId, '', [1], null, title || 'New Note'];
+export const buildUpdateNoteParams = (notebookId: string, noteId: string, content: string, title: string): unknown[] => [
+  notebookId,
+  noteId,
+  [[[content, title || 'New Note', [], 0]]],
+];
+export const buildDeleteNoteParams = (notebookId: string, noteId: string): unknown[] => [notebookId, null, [noteId]];
+
+// ---------------------------------------------------------------------------
+// Operations
 // ---------------------------------------------------------------------------
 
 /**
- * Creates a new note in a notebook with the given title and content.
- * Internally this is a two-step process: first an empty note is created,
- * then it is immediately updated with the actual title and content.
+ * CREATE_NOTE ignores content — it creates an empty "New Note" and returns its id —
+ * so creating a note with content is a two-step create + update.
  */
-export async function createNote(
-  rpc: RPCClient,
-  notebookId: string,
-  title: string,
-  content: string,
-): Promise<NoteInfo> {
-  // Step 1: Create an empty note
-  const createParams = [notebookId, '', [1], null, 'New Note'];
-  const response = await rpc.execute(RPC.CREATE_NOTE, createParams, `/notebook/${notebookId}`);
-  const noteId = extractNoteId(response);
-
-  // Step 2: Update with actual title and content
-  const updateParams = [notebookId, noteId, [[[content, title, [], 0]]]];
-  await rpc.execute(RPC.UPDATE_NOTE, updateParams, `/notebook/${notebookId}`);
-
+export async function createNote(rpc: RPCClient, notebookId: string, title: string, content: string): Promise<NoteInfo> {
+  const response = await rpc.execute(RPC.CREATE_NOTE, buildCreateNoteParams(notebookId, title), `/notebook/${notebookId}`);
+  const noteId = extractCreatedNoteId(response);
+  await rpc.execute(RPC.UPDATE_NOTE, buildUpdateNoteParams(notebookId, noteId, content, title), `/notebook/${notebookId}`);
   return { id: noteId, title, content };
 }
 
-/**
- * Updates an existing note's title and content.
- */
-export async function updateNote(
-  rpc: RPCClient,
-  notebookId: string,
-  noteId: string,
-  title: string,
-  content: string,
-): Promise<NoteInfo> {
-  const params = [notebookId, noteId, [[[content, title, [], 0]]]];
-  await rpc.execute(RPC.UPDATE_NOTE, params, `/notebook/${notebookId}`);
+export async function updateNote(rpc: RPCClient, notebookId: string, noteId: string, title: string, content: string): Promise<NoteInfo> {
+  await rpc.execute(RPC.UPDATE_NOTE, buildUpdateNoteParams(notebookId, noteId, content, title), `/notebook/${notebookId}`);
   return { id: noteId, title, content };
 }
 
-/**
- * Deletes a note from a notebook.
- */
-export async function deleteNote(
-  rpc: RPCClient,
-  notebookId: string,
-  noteId: string,
-): Promise<void> {
-  const params = [notebookId, null, [noteId]];
-  await rpc.execute(RPC.DELETE_NOTE, params, `/notebook/${notebookId}`);
+export async function deleteNote(rpc: RPCClient, notebookId: string, noteId: string): Promise<void> {
+  await rpc.execute(RPC.DELETE_NOTE, buildDeleteNoteParams(notebookId, noteId), `/notebook/${notebookId}`);
 }
 
-/**
- * Lists all notes in a notebook by fetching the notes and mind maps response
- * and parsing out the note entries.
- */
-export async function listNotes(
-  rpc: RPCClient,
-  notebookId: string,
-): Promise<NoteInfo[]> {
-  const params = [notebookId];
-  const response = await rpc.execute(RPC.GET_NOTES_AND_MIND_MAPS, params, `/notebook/${notebookId}`);
-
-  const data = response as unknown[];
-  if (!Array.isArray(data)) {
-    return [];
-  }
-
-  const notes: NoteInfo[] = [];
-
-  // The response may be a flat list of note entries or nested one level deep.
-  // Try parsing each top-level item as a note entry first.
-  for (const item of data) {
-    const note = parseNoteEntry(item);
-    if (note) {
-      notes.push(note);
-      continue;
-    }
-    // If the top-level item is an array of note entries, recurse one level
-    if (Array.isArray(item)) {
-      for (const sub of item) {
-        const subNote = parseNoteEntry(sub);
-        if (subNote) {
-          notes.push(subNote);
-        }
-      }
-    }
-  }
-
-  return notes;
+export async function listNotes(rpc: RPCClient, notebookId: string): Promise<NoteInfo[]> {
+  const response = await rpc.execute(RPC.GET_NOTES_AND_MIND_MAPS, [notebookId], `/notebook/${notebookId}`);
+  return parseNotesList(response);
 }

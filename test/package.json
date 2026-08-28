@@ -1,0 +1,16 @@
+{
+  "name": "notebooklm-skill-tests",
+  "private": true,
+  "type": "module",
+  "description": "Dev-only test harness for the notebooklm skill. NOT shipped with the skill; the skill itself runs with `npx -y bun skills/notebooklm/scripts/main.ts` and needs no install.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test unit",
+    "test:live": "bun test live.test.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.6.0"
+  }
+}
